@@ -28,6 +28,7 @@ import os
 import socket
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -53,11 +54,22 @@ class Registro:
         self.arquivo_csv = arquivo_csv
         self.trava = threading.Lock()
         self.eventos = []
+        self.por_hora = Counter()   # (hora "AAAA-MM-DDTHH", fonte) -> passagens, inclui o CSV antigo
+        self._carregar_historico()
+
+    def _carregar_historico(self):
+        if not os.path.exists(self.arquivo_csv):
+            return
+        with open(self.arquivo_csv, newline="", encoding="utf-8") as f:
+            for linha in csv.DictReader(f):
+                if linha.get("data_hora") and linha.get("fonte"):
+                    self.por_hora[(linha["data_hora"][:13], linha["fonte"])] += 1
 
     def gravar(self, evento):
         linha = {campo: evento.get(campo, "") for campo in CAMPOS_CSV}
         with self.trava:
             self.eventos.append(linha)
+            self.por_hora[(linha["data_hora"][:13], linha["fonte"])] += 1
             novo = not os.path.exists(self.arquivo_csv)
             with open(self.arquivo_csv, "a", newline="", encoding="utf-8") as f:
                 escritor = csv.DictWriter(f, fieldnames=CAMPOS_CSV)
@@ -70,8 +82,20 @@ class Registro:
         print(f"[{linha['data_hora']}] {linha['fonte']}: sentido {linha['sentido']}{extra}")
 
     def ultimos(self, n=12):
+        # "id" é a posição na sessão: o painel usa para saber quais linhas são novas
         with self.trava:
-            return self.eventos[-n:][::-1]
+            inicio = max(0, len(self.eventos) - n)
+            return [dict(e, id=i) for i, e in enumerate(self.eventos[inicio:], inicio)][::-1]
+
+    def passagens_por_hora(self, horas=12):
+        agora = datetime.now().replace(minute=0, second=0, microsecond=0)
+        resultado = []
+        with self.trava:
+            for atras in range(horas - 1, -1, -1):
+                hora = (agora - timedelta(hours=atras)).strftime("%Y-%m-%dT%H")
+                resultado.append({"hora": hora, "camera": self.por_hora[(hora, "camera")],
+                                  "esp32": self.por_hora[(hora, "esp32")]})
+        return resultado
 
 
 class Faixa:
@@ -228,72 +252,24 @@ class NoESP32:
 
 # ---------------------------------------------------------------- painel web
 
-PAGINA = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Contador de veículos</title><style>
-body{font-family:Arial,sans-serif;margin:0;padding:16px;background:#f4f6f9;color:#1d2433}
-h1{font-size:20px;margin:0 0 12px}h2{font-size:16px;margin:18px 0 8px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px;margin-bottom:8px;max-width:640px}
-.card{background:#fff;border-radius:10px;padding:12px;text-align:center;box-shadow:0 1px 3px #0002}
-.card b{display:block;font-size:30px}.card span{font-size:13px;color:#5b6475}
-img{width:100%;max-width:640px;border-radius:10px;display:block}
-.info{font-size:14px;color:#3b4456;margin:4px 0}
-.on{color:#1a7f37;font-weight:bold}.off{color:#b42318;font-weight:bold}
-table{border-collapse:collapse;width:100%;max-width:640px;margin-top:8px;background:#fff;font-size:14px}
-td,th{border-bottom:1px solid #e3e7ee;padding:6px;text-align:left}
-a{color:#2e74b5}
-</style></head><body>
-<h1>Contador de veículos</h1>
-
-<h2>Câmera do celular</h2>
-<div class="cards">
- <div class="card"><b id="c_total">0</b><span>Total</span></div>
- <div class="card"><b id="c_ida">0</b><span>Ida (A&rarr;B)</span></div>
- <div class="card"><b id="c_volta">0</b><span>Volta (B&rarr;A)</span></div>
-</div>
-<p class="info" id="c_info"></p>
-<img id="cam" alt="Imagem ao vivo com as faixas" style="display:none" onerror="this.style.display='none'" onload="this.style.display='block'">
-
-<h2>Nó ESP32 (sensores)</h2>
-<div class="cards">
- <div class="card"><b id="e_total">0</b><span>Total</span></div>
- <div class="card"><b id="e_ida">0</b><span>Ida</span></div>
- <div class="card"><b id="e_volta">0</b><span>Volta</span></div>
- <div class="card"><b id="e_leves">0</b><span>Leves</span></div>
- <div class="card"><b id="e_pesados">0</b><span>Pesados</span></div>
-</div>
-<p class="info" id="e_info"></p>
-<p class="info" id="comp"></p>
-
-<h2>Últimas passagens</h2>
-<p class="info"><a href="/contagens.csv">baixar CSV completo</a></p>
-<table><thead><tr><th>Data e hora</th><th>Fonte</th><th>Sentido</th><th>Altura</th><th>Categoria</th></tr></thead>
-<tbody id="ev"></tbody></table>
-<script>
-const $=id=>document.getElementById(id);
-async function atualiza(){
- try{
-  const d=await (await fetch('/dados')).json();
-  const c=d.camera,e=d.esp32;
-  if(c){
-   $('c_total').textContent=c.total;$('c_ida').textContent=c.ida;$('c_volta').textContent=c.volta;
-   $('c_info').textContent='Faixas: A '+(c.faixa_a?'ocupada':'livre')+' / B '+(c.faixa_b?'ocupada':'livre');
-   $('cam').src='/quadro.jpg?'+Date.now();
-  }else{$('c_info').textContent='Câmera desativada (--sem-camera).';}
-  for(const k of ['total','ida','volta','leves','pesados'])$('e_'+k).textContent=e[k];
-  const s=e.status;
-  $('e_info').innerHTML=e.online
-   ?'<span class="on">conectado</span> · IP '+s.ip+' · sinal '+s.rssi+' dBm · faixas A '+(s.faixa_a?'ocupada':'livre')+
-    ' / B '+(s.faixa_b?'ocupada':'livre')+' · distância '+(s.distancia_cm<0?'sem leitura':s.distancia_cm.toFixed(1)+' cm')+
-    ' (chão '+(s.referencia_cm<0?'?':s.referencia_cm.toFixed(1)+' cm')+')'+(s.pendentes?' · '+s.pendentes+' na fila':'')
-   :'<span class="off">desconectado</span>';
-  $('comp').textContent=c?'Diferença câmera − ESP32: '+(c.total-e.total):'';
-  $('ev').innerHTML=d.ultimos.map(v=>'<tr><td>'+v.data_hora.replace('T',' ')+'</td><td>'+v.fonte+'</td><td>'+v.sentido+
-   '</td><td>'+(v.altura_cm===''?'':v.altura_cm+' cm')+'</td><td>'+v.categoria+'</td></tr>').join('');
- }catch(err){}
+PASTA_PAINEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "painel")
+TIPOS_PAINEL = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".txt": "text/plain; charset=utf-8",
 }
-setInterval(atualiza,500);atualiza();
-</script></body></html>"""
+
+
+def arquivo_do_painel(nome):
+    """Caminho de um arquivo da pasta painel/, ou None se não existir ou sair da pasta."""
+    completo = os.path.normpath(os.path.join(PASTA_PAINEL, nome))
+    extensao = os.path.splitext(completo)[1].lower()
+    if (os.path.commonpath([completo, PASTA_PAINEL]) != PASTA_PAINEL
+            or extensao not in TIPOS_PAINEL or not os.path.isfile(completo)):
+        return None
+    return completo
 
 
 def iniciar_painel(estado, porta):
@@ -301,10 +277,10 @@ def iniciar_painel(estado, porta):
         def log_message(self, *args):
             pass
 
-        def _enviar(self, corpo, tipo, extra=None, codigo=200):
+        def _enviar(self, corpo, tipo, extra=None, codigo=200, cache="no-store"):
             self.send_response(codigo)
             self.send_header("Content-Type", tipo)
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache)
             for chave, valor in (extra or {}).items():
                 self.send_header(chave, valor)
             self.end_headers()
@@ -315,8 +291,16 @@ def iniciar_painel(estado, porta):
 
         def do_GET(self):
             caminho = self.path.split("?")[0]
-            if caminho == "/":
-                self._enviar(PAGINA.encode("utf-8"), "text/html; charset=utf-8")
+            if caminho == "/" or caminho.startswith("/painel/"):
+                # página, estilo, script e fontes ficam em painel/ (nada vem da internet)
+                arquivo = arquivo_do_painel("index.html" if caminho == "/" else caminho[len("/painel/"):])
+                if arquivo is None:
+                    self.send_error(404)
+                    return
+                with open(arquivo, "rb") as f:
+                    corpo = f.read()
+                tipo = TIPOS_PAINEL[os.path.splitext(arquivo)[1].lower()]
+                self._enviar(corpo, tipo, cache="max-age=86400" if tipo == "font/woff2" else "no-store")
             elif caminho == "/dados":
                 with estado["trava"]:
                     camera = dict(estado["camera"]) if estado["camera"] is not None else None
@@ -324,6 +308,7 @@ def iniciar_painel(estado, porta):
                     "camera": camera,
                     "esp32": estado["esp32"].resumo(),
                     "ultimos": estado["registro"].ultimos(),
+                    "por_hora": estado["registro"].passagens_por_hora(),
                 })
             elif caminho == "/quadro.jpg":
                 with estado["trava"]:

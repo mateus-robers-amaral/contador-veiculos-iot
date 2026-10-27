@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F5F6F4">
+<title>Contador de veículos</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230F4C5C'/%3E%3Cpath d='M9 20h14M11 20l2-6h6l2 6' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/painel/painel.css">
+</head>
+<body>
+<!-- ícones usados na página (SVG inline: o painel funciona sem internet) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-baixar" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.3l1.4-2h5.6l1.4 2h2.3A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="i-placa" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 3v3m5-3v3m-5 12v3m5-3v3M3 9.5h3m-3 5h3m12-5h3m-3 5h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-comparar" viewBox="0 0 24 24"><path d="M5 20V10m5 10V4m5 16v-7m5 7V8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-lista" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="4.5" cy="6.5" r="1.3" fill="currentColor"/><circle cx="4.5" cy="12" r="1.3" fill="currentColor"/><circle cx="4.5" cy="17.5" r="1.3" fill="currentColor"/></symbol>
+  <symbol id="i-sem-rede" viewBox="0 0 24 24"><path d="M3 3l18 18M8.5 16.5a5 5 0 0 1 7 0M5 13a10 10 0 0 1 4.2-2.6m5.6 0A10 10 0 0 1 19 13M2 9.5a14.5 14.5 0 0 1 4.5-2.8m4-.9a14.6 14.6 0 0 1 11.5 3.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="20" r="1.3" fill="currentColor"/></symbol>
+  <symbol id="i-fila" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="lateral" aria-label="Navegação">
+    <div class="marca">
+      <div class="marca-nome">Contador<br>de veículos</div>
+      <div class="marca-sub">câmera + nó ESP32</div>
+    </div>
+    <nav class="menu">
+      <a href="#camera"><svg><use href="#i-camera"/></svg>Câmera</a>
+      <a href="#esp32"><svg><use href="#i-placa"/></svg>Nó ESP32</a>
+      <a href="#comparacao"><svg><use href="#i-comparar"/></svg>Comparação</a>
+      <a href="#passagens"><svg><use href="#i-lista"/></svg>Passagens</a>
+    </nav>
+    <div class="lateral-rodape">Pompeia/SP<br>FATEC Pompeia<br>atualizado <span id="atualizado">—</span></div>
+  </aside>
+
+  <main class="principal">
+    <div class="faixa erro topo" id="sem-conexao" role="alert" hidden>
+      <svg class="ico"><use href="#i-sem-rede"/></svg>
+      <span>Sem conexão com o notebook. Tentando de novo…</span>
+    </div>
+
+    <header class="cabecalho">
+      <div>
+        <div class="kicker">FATEC Pompeia · Big Data no Agronegócio</div>
+        <h1>Contador de veículos</h1>
+      </div>
+      <div class="acoes">
+        <a class="botao" href="/contagens.csv" download><svg class="ico"><use href="#i-baixar"/></svg>Baixar CSV</a>
+      </div>
+    </header>
+
+    <p class="frase" id="frase" aria-live="polite">Carregando as contagens…</p>
+
+    <div class="grade-fontes">
+      <!-- ============ Câmera ============ -->
+      <section class="folha" id="camera" aria-labelledby="t-camera">
+        <div class="folha-cab"><h2 id="t-camera">Câmera do celular</h2><span class="mono">A → B = ida</span></div>
+
+        <div id="c-ativa" hidden>
+          <div class="quadro">
+            <img id="c-img" alt="Imagem ao vivo da câmera com as faixas A e B desenhadas" hidden>
+            <span class="ao-vivo" id="c-ao-vivo" hidden>ao vivo</span>
+            <div class="quadro-vazio" id="c-sem-img">
+              <svg><use href="#i-camera"/></svg>
+              <strong>Sem imagem da câmera</strong>
+              <span>Confira se o app de câmera do celular está aberto e na mesma rede Wi-Fi.</span>
+            </div>
+          </div>
+
+          <div class="carimbos">
+            <span class="carimbo" id="c-fa">A · faixa livre</span>
+            <span class="carimbo" id="c-fb">B · faixa livre</span>
+          </div>
+
+          <div class="numeros">
+            <div><span class="rotulo">total</span><span class="n" id="c-total">0</span></div>
+            <div><span class="rotulo etiqueta ida">ida</span><span class="n" id="c-ida">0</span></div>
+            <div><span class="rotulo etiqueta volta">volta</span><span class="n" id="c-volta">0</span></div>
+          </div>
+          <div class="faixa-area zerada" id="c-barra" aria-hidden="true"><div class="seg ida"></div><div class="seg volta"></div></div>
+          <p class="mono legenda-barra" id="c-prop">sem passagens ainda</p>
+        </div>
+
+        <div class="estado-vazio" id="c-desligada" hidden>
+          <span class="carimbo tracejado">câmera desativada</span>
+          <h3>O painel está contando só pelo ESP32</h3>
+          <p>O programa foi iniciado com <code>--sem-camera</code>. Para contar também pela câmera, encerre com Ctrl+C e rode de novo com o endereço do vídeo do celular:</p>
+          <pre><code>python contador_veiculos.py --fonte http://IP_DO_CELULAR:8080/video</code></pre>
+          <p class="dica">O app IP Webcam mostra esse endereço. Também servem <code>--fonte 0</code> (webcam do notebook) e <code>--fonte video.mp4</code>.</p>
+        </div>
+      </section>
+
+      <!-- ============ ESP32 ============ -->
+      <section class="folha" id="esp32" aria-labelledby="t-esp">
+        <div class="folha-cab"><h2 id="t-esp">Nó ESP32</h2><span class="carimbo alerta" id="e-conexao">desconectado</span></div>
+
+        <div class="faixa erro dentro" id="e-sem-sinal">
+          <svg class="ico"><use href="#i-sem-rede"/></svg>
+          <span>Sem notícias do ESP32 há mais de 10 s. Confira o Wi-Fi da placa e o <code>URL_NOTEBOOK</code>.</span>
+        </div>
+        <div class="faixa atencao dentro" id="e-fila" hidden>
+          <svg class="ico"><use href="#i-fila"/></svg>
+          <span id="e-fila-texto"></span>
+        </div>
+
+        <div class="leituras" id="e-leituras">
+          <div class="leitura">
+            <div class="linha"><span class="rotulo">sinal Wi-Fi</span><span class="valor" id="e-rssi">—</span></div>
+            <div class="medidor" role="meter" aria-label="Força do sinal Wi-Fi" aria-valuemin="-90" aria-valuemax="-40" id="e-rssi-med"><i></i></div>
+            <div class="linha mono"><span>IP <span id="e-ip">—</span></span><span>−90 a −40 dBm</span></div>
+          </div>
+          <div class="leitura">
+            <div class="linha"><span class="rotulo">ultrassom</span><span class="valor" id="e-dist">—</span></div>
+            <div class="medidor" role="meter" aria-label="Distância medida em relação ao chão" aria-valuemin="0" aria-valuemax="100" id="e-dist-med"><i></i></div>
+            <div class="linha mono"><span id="e-altura">pista livre</span><span>chão a <span id="e-ref">—</span></span></div>
+          </div>
+          <div class="carimbos">
+            <span class="carimbo" id="e-fa">A · faixa livre</span>
+            <span class="carimbo" id="e-fb">B · faixa livre</span>
+          </div>
+        </div>
+
+        <div class="numeros">
+          <div><span class="rotulo">total</span><span class="n" id="e-total">0</span></div>
+          <div><span class="rotulo etiqueta ida">ida</span><span class="n" id="e-ida">0</span></div>
+          <div><span class="rotulo etiqueta volta">volta</span><span class="n" id="e-volta">0</span></div>
+        </div>
+        <div class="faixa-area zerada" id="e-barra" aria-hidden="true"><div class="seg ida"></div><div class="seg volta"></div></div>
+        <p class="mono legenda-barra" id="e-prop">sem passagens ainda</p>
+
+        <div class="numeros dois">
+          <div><span class="rotulo etiqueta leve">leves</span><span class="n" id="e-leves">0</span></div>
+          <div><span class="rotulo etiqueta pesado">pesados</span><span class="n" id="e-pesados">0</span></div>
+        </div>
+        <div class="faixa-area zerada fina" id="e-barra-cat" aria-hidden="true"><div class="seg leve"></div><div class="seg pesado"></div></div>
+        <p class="mono legenda-barra" id="e-prop-cat">classificados pela altura no ultrassom</p>
+      </section>
+    </div>
+
+    <div class="grade-baixo">
+      <!-- ============ Comparação ============ -->
+      <section class="folha" id="comparacao" aria-labelledby="t-comp">
+        <div class="folha-cab"><h2 id="t-comp">Comparação</h2><span class="mono">câmera × ESP32</span></div>
+
+        <div class="metricas-comp">
+          <div><span class="rotulo"><i class="fonte camera"></i>câmera</span><span class="n" id="m-camera">—</span></div>
+          <div><span class="rotulo"><i class="fonte esp32"></i>ESP32</span><span class="n" id="m-esp">0</span></div>
+          <div class="dif"><span class="rotulo">diferença</span><span class="n" id="m-dif">—</span><span class="mono" id="m-dif-txt"></span></div>
+        </div>
+
+        <table class="tabela-comp">
+          <thead><tr><th>sentido</th><th class="num">câmera</th><th class="num">ESP32</th><th class="num">diferença</th></tr></thead>
+          <tbody>
+            <tr><td><span class="etiqueta ida">ida</span></td><td class="num" id="t-c-ida">—</td><td class="num" id="t-e-ida">0</td><td class="num" id="t-d-ida">—</td></tr>
+            <tr><td><span class="etiqueta volta">volta</span></td><td class="num" id="t-c-volta">—</td><td class="num" id="t-e-volta">0</td><td class="num" id="t-d-volta">—</td></tr>
+          </tbody>
+        </table>
+
+        <div class="bloco-rotulo">
+          <span>passagens por hora</span>
+          <span class="legenda"><span><i class="fonte camera"></i>câmera</span><span><i class="fonte esp32"></i>ESP32</span></span>
+        </div>
+        <div class="grafico" id="grafico" role="img" aria-label="Passagens por hora nas últimas 12 horas"></div>
+        <p class="mono legenda-barra" id="grafico-nota">últimas 12 horas, com o histórico do CSV</p>
+      </section>
+
+      <!-- ============ Últimas passagens ============ -->
+      <section class="folha" id="passagens" aria-labelledby="t-pass">
+        <div class="folha-cab"><h2 id="t-pass">Últimas passagens</h2><span class="mono" id="p-info">mais recentes no topo</span></div>
+        <div class="diario" id="diario" aria-live="polite"></div>
+        <div class="vazio" id="diario-vazio">Nenhuma passagem registrada nesta sessão.</div>
+      </section>
+    </div>
+  </main>
+</div>
+<script src="/painel/painel.js"></script>
+</body>
+</html>
