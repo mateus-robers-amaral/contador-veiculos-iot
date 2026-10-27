@@ -1,0 +1,14 @@
+# senha do Wi-Fi do ESP32 (use no_sensores_esp32/segredos.exemplo.h como modelo)
+segredos.h
+
+# dados gerados ao rodar o contador
+contagens.csv
+*.mp4
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# arquivos temporários do Word
+~$*
