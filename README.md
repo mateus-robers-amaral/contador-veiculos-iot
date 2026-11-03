@@ -1,574 +1,369 @@
-# Contador de veículos IoT
+# Estacionamento IoT: vagas livres em tempo real
 
-Projeto da FATEC Pompeia (Big Data no Agronegócio). Dois métodos contam os veículos ao mesmo tempo e mandam os dados pelo Wi-Fi para um notebook:
+Projeto da FATEC Pompeia (Big Data no Agronegócio). Um estacionamento de **100 vagas** tem uma única entrada e saída. A câmera de um celular filma essa passagem, o sistema identifica se cada veículo está **entrando** ou **saindo** e mantém o número de **vagas livres** sempre atualizado:
 
-- **Câmera do celular:** o celular transmite o vídeo. O notebook conta os veículos que cruzam duas faixas virtuais, **A** e **B**, e descobre o sentido. A antes de B é **ida**, B antes de A é **volta**.
-- **Nó ESP32:** duas barreiras infravermelhas reais (faixas A e B) detectam a passagem e o sentido. Um sensor ultrassônico acima da pista mede a altura do veículo para classificá-lo em **leve** ou **pesado**.
-
-O notebook roda `contador_veiculos.py`, que junta tudo num painel web e num único CSV. O painel abre no navegador de qualquer celular da mesma rede, e assim dá para comparar a precisão dos dois métodos.
+- num **indicador físico na entrada** (LEDs verde, amarelo e vermelho), controlado pelo ESP32;
+- num **painel web** hospedado na Vercel, que abre no celular de qualquer lugar.
 
 ```
-[Celular com IP Webcam] ──vídeo──►┐
-                                  ├─► [Notebook: contador_veiculos.py] ──► painel web (celular ou PC)
-[ESP32 + IR + ultrassom] ──HTTP──►┘                                    └─► contagens.csv
+[Celular: IP Webcam] --vídeo (Wi-Fi local)--> [Notebook: visao.py, OpenCV]
+                                                     | POST /movimento (HTTP local)
+                                                     v
+                                  [ESP32: controlador do estacionamento]
+                                   - mantém a contagem (gravada na flash)
+                                   - acende o indicador: LIVRE / QUASE LOTADO / LOTADO
+                                   - publica o estado na nuvem (HTTPS)
+                                                     |
+                                                     v
+                         [Vercel: API + Upstash Redis]  <--  [Painel web no celular]
 ```
 
-Este guia vai do zero ao sistema funcionando: compra das peças, montagem dos sensores, gravação da placa, configuração do celular e uso do painel. Siga as partes na ordem. Cada uma termina com um **teste** que confirma que a etapa deu certo antes de passar para a próxima.
+| Parte | Papel |
+|---|---|
+| **Celular** | Só o sensor de imagem (app IP Webcam ou DroidCam). |
+| **Notebook (`visao.py`)** | Processamento de borda: detecta a passagem e o sentido com duas faixas virtuais e manda cada movimento ao ESP32. Não guarda contagem. Tem uma página local só para calibrar a câmera. **A imagem nunca vai para a nuvem.** |
+| **ESP32 (`esp32_estacionamento/`)** | A peça central. Guarda a **contagem oficial** (sobrevive a falta de energia), acende o indicador, publica as vagas na nuvem e aplica correções manuais. Funciona mesmo sem internet. |
+| **Vercel (`web/`)** | API que recebe o estado do ESP32 e painel público com as vagas, o gráfico do dia e os últimos movimentos. |
 
 ## Sumário
 
-0. [Lista de materiais](#0-lista-de-materiais)
-1. [Preparar o notebook](#1-preparar-o-notebook)
-2. [Preparar a Arduino IDE e testar a placa](#2-preparar-a-arduino-ide-e-testar-a-placa)
-3. [Montar os sensores](#3-montar-os-sensores)
-4. [Configurar e gravar o programa do ESP32](#4-configurar-e-gravar-o-programa-do-esp32)
-5. [Montar a maquete](#5-montar-a-maquete)
-6. [Transformar o celular em câmera](#6-transformar-o-celular-em-câmera)
-7. [Preparar a rede](#7-preparar-a-rede)
-8. [Rodar o contador](#8-rodar-o-contador)
-9. [Abrir o painel no celular](#9-abrir-o-painel-no-celular)
-10. [Testar a precisão e analisar os dados](#10-testar-a-precisão-e-analisar-os-dados)
-11. [Referência técnica](#11-referência-técnica)
-12. [Solução de problemas](#12-solução-de-problemas)
-13. [Limitações](#13-limitações)
+1. [Materiais](#1-materiais)
+2. [Ligações elétricas](#2-ligações-elétricas)
+3. [Configurar e gravar o ESP32](#3-configurar-e-gravar-o-esp32)
+4. [Preparar o notebook e rodar a visão](#4-preparar-o-notebook-e-rodar-a-visão)
+5. [Calibrar as faixas](#5-calibrar-as-faixas)
+6. [Painel web: rodar no notebook](#6-painel-web-rodar-no-notebook)
+7. [Painel web: publicar na Vercel](#7-painel-web-publicar-na-vercel)
+8. [Testes sem hardware](#8-testes-sem-hardware)
+9. [Referência técnica](#9-referência-técnica)
+10. [Solução de problemas](#10-solução-de-problemas)
+11. [Limitações](#11-limitações)
 
----
-
-## 0. Lista de materiais
-
-### Eletrônica (nó ESP32)
-
-| Item | Qtd. | Observação |
-|---|---|---|
-| Placa **ESP32 DevKit** (ESP32-WROOM-32, 30 ou 38 pinos) | 1 | Tem Wi-Fi embutido. Qualquer DevKit com GPIO 5, 18, 32 e 33 serve. |
-| **Módulo sensor infravermelho de 2 canais** (comparador LM393, saídas OUT1 e OUT2) | 1 | Também servem dois módulos de 1 canal (tipo FC-51), um para cada faixa. |
-| **Sensor ultrassônico HC-SR04** | 1 | Mede a altura do veículo. |
-| Resistor de **1 kΩ** | 1 | Divisor de tensão do ECHO. |
-| Resistor de **2 kΩ** (ou dois de 1 kΩ em série) | 1 | Divisor de tensão do ECHO. |
-| Protoboard | 1 | 400 ou 830 furos. |
-| Jumpers macho-macho e macho-fêmea | ~15 | |
-| Cabo **USB de dados** compatível com a placa (micro-USB ou USB-C) | 1 | Cabo só de carga não grava a placa. |
-
-### Câmera, rede e notebook
-
-| Item | Qtd. | Observação |
-|---|---|---|
-| Celular Android ou iPhone | 1 | Vira câmera IP pelo app **IP Webcam** ou **DroidCam**. |
-| Notebook com Wi-Fi | 1 | Windows, Linux ou macOS, com Python 3.10 ou mais recente. |
-| Rede Wi-Fi **sem login por página web** ou hotspot do celular | 1 | O ESP32 não consegue fazer login em portal. |
-| Segundo celular (opcional) | 1 | Para ver o painel enquanto o primeiro filma. |
-
-### Bancada e maquete
-
-| Item | Observação |
-|---|---|
-| Suporte articulado ou mini tripé com garra | Mantém o celular fixo, olhando a pista de cima. |
-| Suporte para o HC-SR04 (papelão, palito, impressão 3D) | Deixa o sensor acima da pista, apontado para baixo. |
-| Carrinhos de brinquedo de tamanhos e cores variados | 3 a 4. Inclua pelo menos um mais alto, para testar "pesado". |
-| Papelão, papel e fita | Para a pista. |
-| Power bank ou extensão | A transmissão de vídeo gasta muita bateria do celular. |
-
-### Programas (todos gratuitos)
-
-- Python 3 com as bibliotecas OpenCV e NumPy (o `pip` instala).
-- Arduino IDE 2 com o pacote de placas ESP32 da Espressif.
-- Git (opcional, para baixar o projeto).
-- No celular: IP Webcam (Android) ou DroidCam (Android/iOS).
-- Excel, LibreOffice Calc ou Google Planilhas, para analisar o CSV.
-
----
-
-## 1. Preparar o notebook
-
-### 1.1 Instalar o Python
-
-1. Baixe o Python 3.12 em <https://www.python.org/downloads/>. No Windows também dá para instalar pela Microsoft Store.
-2. No instalador do site, **marque "Add python.exe to PATH"** antes de clicar em *Install Now*.
-3. Abra um terminal novo (PowerShell no Windows) e confira:
-
-   ```bash
-   python --version
-   ```
-
-   Deve aparecer `Python 3.10` ou mais recente.
-
-### 1.2 Baixar o projeto
-
-O repositório é privado. Peça acesso ao dono do repositório no GitHub e depois rode:
-
-```bash
-git clone https://github.com/mateus-robers-amaral/contador-veiculos-iot.git
-cd contador-veiculos-iot
+```
+contador-veiculos-iot/
+├── visao.py                      visão computacional no notebook (câmera -> movimentos)
+├── requirements.txt              bibliotecas Python (OpenCV e NumPy)
+├── esp32_estacionamento/         programa do ESP32 (contagem, indicador, nuvem)
+│   ├── esp32_estacionamento.ino
+│   └── segredos.exemplo.h        modelo do segredos.h (Wi-Fi, URL da API, token)
+├── web/                          painel e API (Next.js, para a Vercel)
+│   ├── app/                      página, estilo e rotas /api/estado e /api/ajuste
+│   ├── lib/                      regras do estacionamento e acesso ao banco
+│   └── .env.example              nomes das variáveis de ambiente
+├── testes/
+│   ├── gerar_video.py            vídeo sintético com entradas e saídas
+│   └── esp32_simulado.py         imita o ESP32 para testar a visão sem a placa
+└── teste_esp32/                  teste rápido de uma placa nova (LED + busca de redes)
 ```
 
-Sem Git, use *Code → Download ZIP* na página do repositório e extraia a pasta.
+---
 
-### 1.3 Instalar as bibliotecas
+## 1. Materiais
 
-Dentro da pasta do projeto:
+| Item | Qtd. | Observação |
+|---|---|---|
+| ESP32 DevKit (ESP32-WROOM-32) | 1 | O do laboratório é ESP32-D0WD-V3 com USB CP2102. |
+| LED verde, amarelo e vermelho (5 mm) | 1 de cada | Opcionais: sem eles, o LED azul da placa acende quando lota. |
+| Resistor de 220 a 330 Ω | 3 | Um por LED. |
+| Protoboard e jumpers | — | |
+| Cabo USB de dados | 1 | Cabo só de carga não grava a placa. |
+| Celular Android ou iPhone | 1 | App **IP Webcam** (Android) ou **DroidCam**. |
+| Suporte ou mini tripé para o celular | 1 | A câmera não pode se mexer. |
+| Notebook com Python 3.10+ e Node.js 20+ | 1 | |
+| Rede Wi-Fi 2,4 GHz **sem login por página web** | 1 | No laboratório, a rede **BDAG**. |
+| Carrinhos de brinquedo e uma pista de papelão | — | Para a maquete. |
+
+---
+
+## 2. Ligações elétricas
+
+> Desligue o USB antes de mexer nas ligações.
+
+| Componente | Ligação |
+|---|---|
+| LED verde (há vagas) | GPIO 25 → resistor 220–330 Ω → perna longa (+) do LED; perna curta (−) → GND |
+| LED amarelo (quase lotado, ≥ 90%) | GPIO 26 → resistor → LED → GND |
+| LED vermelho (lotado) | GPIO 27 → resistor → LED → GND |
+| LED azul da placa | GPIO 2, já na placa: acende quando lota |
+
+```
+            ESP32 DevKit
+          ┌──────────────┐
+          │      GPIO 25 ├──[ 220 Ω ]──►|── verde ──┐
+          │      GPIO 26 ├──[ 220 Ω ]──►|── amarelo ┤
+          │      GPIO 27 ├──[ 220 Ω ]──►|── vermelho┤
+          │          GND ├──────────────────────────┘
+          └──────────────┘
+                 ►|  = LED (lado do triângulo = perna longa, +)
+```
+
+Os pinos ficam no início do `.ino` (`PINO_VERDE`, `PINO_AMARELO`, `PINO_VERMELHO`), se precisar trocar.
+
+---
+
+## 3. Configurar e gravar o ESP32
+
+### 3.1 Arduino IDE (uma vez só)
+
+1. Instale a **Arduino IDE 2** (<https://www.arduino.cc/en/software>).
+2. Em *File → Preferences → Additional boards manager URLs*, cole `https://espressif.github.io/arduino-esp32/package_esp32_index.json`.
+3. Em *Tools → Board → Boards Manager*, instale **esp32 by Espressif Systems** (versão 3.x).
+4. Ligue a placa. No Windows, ela aparece em *Gerenciador de Dispositivos → Portas* (no laboratório, **COM13**). Se não aparecer, instale o driver **CP210x** ou troque o cabo.
+
+Para testar uma placa nova, grave antes o `teste_esp32/teste_esp32.ino`: o LED pisca e o Monitor Serial lista as redes Wi-Fi.
+
+### 3.2 `segredos.h`
+
+Copie `esp32_estacionamento/segredos.exemplo.h` para `esp32_estacionamento/segredos.h` e preencha:
+
+```cpp
+const char* WIFI_SSID    = "BDAG";
+const char* WIFI_SENHA   = "...";                        // rede aberta: ""
+const char* URL_API      = "https://seu-projeto.vercel.app";  // sem barra no final
+const char* INGEST_TOKEN = "um-token-longo-e-aleatorio";  // igual ao da Vercel
+```
+
+- Para gerar o token: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+- Antes do deploy, dá para usar `URL_API = "http://IP_DO_NOTEBOOK:3000"` e testar com o painel rodando no notebook (parte 6).
+- Com `URL_API = ""`, a placa funciona só na rede local: indicador e página `http://estacionamento.local/`.
+- O `segredos.h` está no `.gitignore`: senha e token nunca vão para o GitHub.
+
+### 3.3 Gravar
+
+Na Arduino IDE, abra `esp32_estacionamento/esp32_estacionamento.ino`, escolha a placa **ESP32 Dev Module** e a porta, e clique em **Upload**. Se travar em `Connecting...`, segure o botão **BOOT** até a gravação começar.
+
+Pela linha de comando:
+
+```powershell
+$cli = "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe"
+& $cli compile --fqbn esp32:esp32:esp32 --upload -p COM13 esp32_estacionamento
+```
+
+### 3.4 Conferir
+
+Abra o **Monitor Serial** em **115200 baud**:
+
+```
+=== ESP32 - controlador do estacionamento ===
+Contagem recuperada da flash: 0 ocupadas, 100 livres (livre)
+Conectando ao Wi-Fi "BDAG"...
+Wi-Fi conectado. IP 10.64.69.162, sinal -62 dBm. Também responde em http://estacionamento.local
+Publicando em https://seu-projeto.vercel.app
+```
+
+No navegador do notebook, `http://estacionamento.local/` mostra as vagas, e `http://estacionamento.local/estado` mostra o JSON com o estado e os LEDs.
+
+---
+
+## 4. Preparar o notebook e rodar a visão
+
+### 4.1 Instalar
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Isso instala o OpenCV e o NumPy. O painel web usa só a biblioteca padrão do Python, sem Flask nem outras dependências.
+### 4.2 Celular como câmera
 
-> **Teste da parte 1:** rode `python -c "import cv2, numpy; print(cv2.__version__)"`. Se aparecer um número de versão, está tudo certo.
+- **Android, IP Webcam:** em *Preferências de vídeo*, escolha resolução **640×480** e toque em **Iniciar servidor**. O vídeo fica em `http://IP_DO_CELULAR:8080/video`.
+- **DroidCam:** o vídeo fica em `http://IP_DO_CELULAR:4747/video`.
+- O celular, o notebook e o ESP32 precisam estar **na mesma rede**.
 
-### O que tem na pasta
-
-```
-contador-veiculos-iot/
-├── contador_veiculos.py        programa do notebook (visão computacional + servidor do painel)
-├── requirements.txt            bibliotecas Python
-├── painel/                     página do painel web
-│   ├── index.html
-│   ├── painel.css
-│   ├── painel.js
-│   └── fontes/                 fontes Geist servidas localmente (licença OFL)
-├── no_sensores_esp32/          programa da placa ESP32 com os sensores
-│   ├── no_sensores_esp32.ino
-│   └── segredos.exemplo.h      modelo para o nome e a senha do Wi-Fi
-└── teste_esp32/
-    └── teste_esp32.ino         teste rápido da placa (LED + busca de redes)
-```
-
----
-
-## 2. Preparar a Arduino IDE e testar a placa
-
-### 2.1 Instalar a IDE e o suporte ao ESP32
-
-1. Baixe a **Arduino IDE 2** em <https://www.arduino.cc/en/software> e instale.
-2. Abra *File → Preferences* (*Arquivo → Preferências*). Em **Additional boards manager URLs**, cole:
-
-   ```
-   https://espressif.github.io/arduino-esp32/package_esp32_index.json
-   ```
-
-3. Abra *Tools → Board → Boards Manager*, procure **esp32** e instale **"esp32 by Espressif Systems"**. O download é grande e pode demorar alguns minutos.
-
-### 2.2 Conectar a placa
-
-1. Ligue o ESP32 ao notebook com o cabo USB de **dados**.
-2. No Windows, abra o *Gerenciador de Dispositivos → Portas (COM e LPT)*. Deve aparecer algo como `Silicon Labs CP210x (COM13)` ou `USB-SERIAL CH340 (COM5)`.
-3. Se não aparecer nenhuma porta:
-   - troque o cabo, porque muitos cabos só carregam;
-   - instale o driver do chip da sua placa: **CP210x** (Silicon Labs) ou **CH340** (WCH). O nome do chip vem impresso perto do conector USB.
-
-### 2.3 Gravar o programa de teste
-
-1. Na Arduino IDE, abra `teste_esp32/teste_esp32.ino`.
-2. Em *Tools → Board*, escolha **ESP32 Dev Module**. Em *Tools → Port*, escolha a porta COM do passo anterior.
-3. Clique em **Upload** (a seta).
-4. Se a gravação parar em `Connecting.....` e falhar, segure o botão **BOOT** da placa quando aparecer `Connecting` e solte quando a porcentagem começar a subir.
-5. Abra o **Serial Monitor** (lupa no canto superior direito) em **115200 baud**.
-
-> **Teste da parte 2:** o LED azul da placa pisca a cada meio segundo. O Monitor Serial mostra o modelo do chip e a **lista das redes Wi-Fi** próximas. Confira se a rede que você vai usar aparece na lista, com sinal melhor que −80 dBm.
-
-Pela linha de comando, a gravação equivalente é:
+### 4.3 Rodar
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32 --upload -p COM13 teste_esp32
+python visao.py --fonte http://192.168.0.10:8080/video
 ```
 
----
-
-## 3. Montar os sensores
-
-> **Desconecte o cabo USB antes de mexer nas ligações.**
-
-### 3.1 Esquema de ligação
-
-| Sensor / pino | Ligação no ESP32 |
-|---|---|
-| IR – VCC | 3V3 |
-| IR – GND | GND |
-| IR – OUT1 (faixa A) | GPIO 32 |
-| IR – OUT2 (faixa B) | GPIO 33 |
-| HC-SR04 – VCC | VIN (5 V) |
-| HC-SR04 – GND | GND |
-| HC-SR04 – TRIG | GPIO 5 |
-| HC-SR04 – ECHO | resistor de **1 kΩ** até o GPIO 18, e do GPIO 18 um resistor de **2 kΩ** até o GND |
-
-```
-                     ESP32 DevKit
-                   ┌──────────────┐
-  IR VCC ──────────┤ 3V3          │
-  IR GND ──────────┤ GND          │
-  IR OUT1 (A) ─────┤ GPIO 32      │
-  IR OUT2 (B) ─────┤ GPIO 33      │
-                   │              │
-  HC-SR04 VCC ─────┤ VIN (5 V)    │
-  HC-SR04 GND ─────┤ GND          │
-  HC-SR04 TRIG ────┤ GPIO 5       │
-                   │      GPIO 18 ├────┬───── 1 kΩ ───── HC-SR04 ECHO
-                   │              │    │
-                   │              │   2 kΩ
-                   │          GND ├────┘
-                   └──────────────┘
-```
-
-> **Atenção:** nunca ligue o ECHO direto na ESP32. Ele sai com 5 V, e a ESP32 só aguenta 3,3 V. O divisor de 1 kΩ + 2 kΩ reduz o sinal para cerca de 3,3 V (5 V × 2 / 3).
-
-### 3.2 Passo a passo na protoboard
-
-1. Encaixe o ESP32 **atravessando o canal do meio** da protoboard, com uma fileira de pinos de cada lado. Se a placa for larga demais, use duas protoboards lado a lado ou jumpers macho-fêmea direto nos pinos.
-2. Ligue um pino **GND** do ESP32 ao barramento azul (−) da protoboard. Todos os GND vão para esse barramento.
-3. **Módulo IR:**
-   - VCC no **3V3** (não no 5 V: assim a saída fica em 3,3 V, segura para a ESP32);
-   - GND no barramento GND;
-   - OUT1 no **GPIO 32** e OUT2 no **GPIO 33**.
-4. **HC-SR04:**
-   - VCC no **VIN**, que tem 5 V quando a placa está no USB;
-   - GND no barramento GND;
-   - TRIG no **GPIO 5**;
-   - ECHO numa fileira livre da protoboard. Dessa fileira sai o resistor de **1 kΩ** até a fileira do **GPIO 18**. Da fileira do GPIO 18 sai o resistor de **2 kΩ** até o barramento GND.
-5. Confira cada fio com a tabela antes de religar o USB.
-
-Os pinos ficam no topo do `no_sensores_esp32.ino` (`PINO_IR_A`, `PINO_IR_B`, `PINO_TRIG`, `PINO_ECHO`), caso precise trocar algum.
-
-### 3.3 Ajustar os sensores infravermelhos
-
-Cada canal do módulo IR tem um **trimpot azul** (parafusinho) que ajusta o alcance.
-
-1. Ligue o USB. O LED de alimentação do módulo acende.
-2. Coloque um carrinho a cerca de 3 a 5 cm do sensor. Gire o trimpot até o **LED do canal acender**.
-3. Tire o carrinho. O LED precisa **apagar**. Se continuar aceso, gire o trimpot no sentido contrário, aos poucos.
-4. Repita para o outro canal.
-
-> **Teste da parte 3:** com o carrinho na frente, o LED do canal acende; com a pista vazia, apaga. Se o seu módulo funcionar ao contrário, troque `IR_ATIVO` para `HIGH` no `.ino` (veja a parte 4).
-
----
-
-## 4. Configurar e gravar o programa do ESP32
-
-### 4.1 Nome e senha do Wi-Fi
-
-1. Na pasta `no_sensores_esp32/`, copie `segredos.exemplo.h` para **`segredos.h`**.
-2. Preencha o nome e a senha da rede:
-
-   ```cpp
-   const char* WIFI_SSID  = "NOME_DA_REDE";
-   const char* WIFI_SENHA = "SENHA_DA_REDE";
-   ```
-
-   Numa rede aberta, sem senha, deixe `WIFI_SENHA = ""`.
-
-O `segredos.h` está no `.gitignore`, então a senha nunca vai para o GitHub.
-
-### 4.2 Endereço do notebook
-
-O ESP32 manda as passagens para o notebook, então precisa saber o endereço dele. Descubra o IP do notebook (veja a [parte 7](#7-preparar-a-rede)) e coloque no início do `.ino`:
-
-```cpp
-const char* URL_NOTEBOOK = "http://10.64.69.164:8000";
-```
-
-O `contador_veiculos.py` também mostra essa linha pronta ao iniciar. **Sempre que o notebook mudar de rede, o IP muda e a placa precisa ser gravada de novo.**
-
-### 4.3 Ajustes
-
-| Constante | Padrão | Para que serve |
-|---|---|---|
-| `ALTURA_PESADO_CM` | 6.0 | Altura a partir da qual o veículo é "pesado". Ajuste aos seus carrinhos. |
-| `IR_ATIVO` | `LOW` | Troque para `HIGH` se o módulo IR indicar "ocupado" ao contrário. |
-| `TEMPO_MAX_TRAVESSIA_MS` | 2000 | Tempo máximo entre a primeira e a segunda faixa. |
-| `TEMPO_LIVRE_MS` | 150 | Tempo com as duas faixas livres para encerrar a passagem. |
-| `CARENCIA_MS` | 300 | Tempo em que novas detecções são ignoradas logo após uma passagem. |
-
-### 4.4 Gravar
-
-Abra `no_sensores_esp32/no_sensores_esp32.ino`, confira placa e porta e clique em **Upload**. Pela linha de comando:
+O programa procura o ESP32 por `estacionamento.local`. Se o nome não resolver, use o IP que aparece no Monitor Serial:
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32 --upload -p COM13 no_sensores_esp32
+python visao.py --fonte http://192.168.0.10:8080/video --esp32 10.64.69.162
 ```
 
-> **Ao ligar, a pista precisa estar vazia.** A placa mede a distância até o chão nesse momento, e essa medida é a referência para calcular a altura dos veículos.
-
-> **Teste da parte 4:** no Monitor Serial (115200 baud) aparece:
->
-> ```
-> === Nó ESP32 - contador de veículos ===
-> Ultrassom: chão a 25.0 cm
-> Conectando ao Wi-Fi "BDAG"...
-> Wi-Fi conectado. IP 10.64.69.162, sinal -66 dBm. Enviando para http://10.64.69.164:8000
-> ```
->
-> Passe um carrinho pelas duas faixas. Deve aparecer uma linha como `Passagem: ida (A->B) | altura 4.2 cm (leve) | na fila: 1`. Se aparecer `Ultrassom: sem leitura`, revise as ligações do HC-SR04 e o divisor de tensão.
-
----
-
-## 5. Montar a maquete
-
-```
-            visto de cima                                 visto de lado
-
-        faixa A     faixa B                                 HC-SR04
-          │           │                                       ▼▼
-  ════════╪═══════════╪════════  ◄── pista              ──────┬┬──────  suporte
-   ida ──►│  [carro]  │                                       ││
-          │           │◄── volta                              ││ ~25 cm
-  ════════╪═══════════╪════════                         ══════╧╧══════  pista
-         [IR1]       [IR2]     ◄── módulo IR na lateral
-```
-
-1. Faça uma pista reta de papelão com pelo menos 40 cm de comprimento.
-2. **Módulo IR:** na lateral da pista, com os dois pares apontados para a via. O canal 1 é a faixa A e o canal 2 é a faixa B. Na ida, o carro passa primeiro pelo canal 1.
-3. **Distância entre as faixas:** menor que o comprimento do menor carrinho. Assim o mesmo veículo cobre A e B ao mesmo tempo em algum momento, e a ordem fica clara.
-4. **HC-SR04:** num suporte acima da pista, apontado para baixo, **entre as duas faixas**. Entre 15 e 30 cm de altura funciona bem.
-5. **Celular:** preso num suporte acima da pista, olhando para baixo, com as duas faixas do ESP32 no meio da imagem. **Ele não pode se mexer**, porque o programa compara cada quadro com o fundo aprendido.
-6. Evite sombras fixas sobre a pista e luz do sol batendo direto. Os sensores IR também sofrem com sol forte.
-
----
-
-## 6. Transformar o celular em câmera
-
-### Android: IP Webcam (recomendado)
-
-1. Instale o **IP Webcam** (de Pavel Khlebovich) pela Play Store.
-2. Ajustes recomendados, antes de iniciar:
-   - **Preferências de vídeo → Resolução do vídeo:** 640×480. O programa reduz a imagem para 320 px de largura, então resolução maior só gasta Wi-Fi e bateria.
-   - **Qualidade:** em torno de 50%.
-   - **Orientação:** paisagem, se o celular estiver deitado.
-   - Deixe a opção de **manter a tela ligada** ativada e o celular no carregador.
-3. Role até o fim e toque em **Iniciar servidor**.
-4. A tela mostra o endereço, por exemplo `http://192.168.0.10:8080`. **O vídeo fica em `http://192.168.0.10:8080/video`.**
-
-### iPhone ou Android: DroidCam
-
-Instale o **DroidCam** e abra o app. Ele mostra o IP do celular. O vídeo fica em `http://IP_DO_CELULAR:4747/video`.
-
-> **Teste da parte 6:** com o notebook na mesma rede, abra o endereço do vídeo (com `/video`) no navegador do notebook. A imagem ao vivo deve aparecer.
-
-> **Um celular só?** O mesmo aparelho pode filmar e abrir o painel, mas o Android pode pausar o IP Webcam quando você troca para o navegador. O mais seguro é ver o painel no notebook ou num segundo celular.
-
----
-
-## 7. Preparar a rede
-
-O celular, o notebook e o ESP32 precisam estar **na mesma rede Wi-Fi**. Não precisa de internet.
-
-### Qual rede usar
-
-- **Rede sem senha ou com senha comum (WPA2), sem página de login:** funciona. No laboratório, a rede **BDAG** atende.
-- **Rede com login por página web** (comum em faculdades): **não funciona**. O ESP32 não consegue fazer o login.
-- **Rede que isola os aparelhos:** o celular não enxerga o notebook. Use outra rede.
-- **Plano B:** o roteador do celular (hotspot). Conecte o notebook e o ESP32 a ele. Se o mesmo celular for a câmera, o IP Webcam continua funcionando normalmente.
-
-### Descobrir o IP do notebook
-
-O `contador_veiculos.py` mostra o IP ao iniciar. Para conferir à mão, no Windows:
-
-```powershell
-ipconfig
-```
-
-Use o **Endereço IPv4** do adaptador **Wi-Fi**, não os de "vEthernet" ou "Ethernet" de máquinas virtuais.
-
-### Liberar o Firewall do Windows
-
-Na primeira vez que o programa rodar, o Windows pergunta se o Python pode usar a rede. **Permita.** Sem isso, nem o celular nem o ESP32 conseguem falar com o notebook.
-
-Se o celular não abrir o painel, veja como a rede está classificada em *Configurações → Rede e Internet → Wi-Fi → (nome da rede)*:
-- **Rede privada:** a permissão de redes privadas basta.
-- **Rede pública:** o Python precisa estar permitido também em redes públicas. Em *Firewall do Windows Defender → Permitir um aplicativo*, marque a coluna **Pública** do Python.
-
----
-
-## 8. Rodar o contador
-
-### 8.1 Primeiro, só com o ESP32
-
-```bash
-python contador_veiculos.py --sem-camera
-```
-
-O terminal mostra:
-
-```
-Painel web: http://10.64.69.164:8000  (abra no celular ou no notebook)
-No nó ESP32, configure URL_NOTEBOOK = "http://10.64.69.164:8000"
-Modo sem câmera: aguardando o nó ESP32. Ctrl+C para sair.
-```
-
-Ligue o ESP32. A cada passagem, o terminal mostra uma linha como `[2026-10-27T14:40:36] esp32: sentido ida, leve 3.2 cm`.
-
-### 8.2 Depois, com a câmera
-
-Encerre com **Ctrl+C** e rode com o endereço do vídeo do celular:
-
-```bash
-python contador_veiculos.py --fonte http://192.168.0.10:8080/video
-```
-
-- Uma janela abre com a imagem e as faixas. A faixa fica **verde** quando está livre e **vermelha** quando está ocupada.
-- As faixas são **verticais** por padrão, para veículos que andam da esquerda para a direita na imagem. Se andarem de cima para baixo, use `--horizontal` ou aperte **o** na janela.
-- Clique com o botão **esquerdo** onde quer a faixa A e com o **direito** onde quer a faixa B. Alinhe com as faixas do ESP32 para comparar os dois métodos.
-- Deixe a distância entre as faixas **menor que o comprimento do carrinho**.
-
-Também é possível usar a webcam do notebook (`--fonte 0`) ou um vídeo gravado (`--fonte teste.mp4`). O vídeo gravado é útil para repetir o mesmo teste e medir a precisão.
-
-### Teclas na janela
-
-| Tecla | Ação |
-|---|---|
-| `q` | sair |
-| `r` | zerar a contagem das duas fontes |
-| `f` | reaprender o fundo (use depois de mudar a luz ou mexer a câmera) |
-| `o` | alternar faixas verticais/horizontais |
-
-### Opções
-
-| Opção | Padrão | Quando mudar |
+| Opção | Padrão | Para que serve |
 |---|---|---|
 | `--fonte` | 0 | URL do vídeo do celular, índice da webcam ou arquivo de vídeo. |
-| `--sem-camera` | – | Não usa câmera: só recebe o nó ESP32. Útil para testar os sensores. |
-| `--sem-janela` | – | Roda só com o painel web, sem janela. |
-| `--ocupacao` | 0.05 | Fração da faixa que precisa mudar para contar como ocupada. Aumente se houver contagens falsas e diminua se carros pequenos não forem detectados. |
+| `--esp32` | estacionamento.local | Endereço do ESP32 (nome, IP ou ip:porta). |
+| `--inverter` | – | Troca o sentido: B antes de A passa a ser entrada. |
 | `--faixa-a` / `--faixa-b` | 0.40 / 0.60 | Posição inicial das faixas (0 = borda esquerda/topo, 1 = borda direita/base). |
-| `--horizontal` | – | Faixas horizontais, para veículos que se movem para cima e para baixo na imagem. |
-| `--porta` | 8000 | Porta do painel web. Se mudar, ajuste também o `URL_NOTEBOOK` do ESP32. |
-| `--csv` | contagens.csv | Arquivo de registro. |
+| `--horizontal` | – | Faixas horizontais, para veículos que andam para cima e para baixo na imagem. |
+| `--ocupacao` | 0.05 | Fração da faixa que precisa mudar para ela contar como ocupada. |
+| `--porta` | 8000 | Porta da página de calibração. |
+| `--sem-janela` | – | Não abre a janela do OpenCV (só a página de calibração). |
+
+Cada movimento aparece no terminal e é confirmado pelo ESP32:
+
+```
+[14:40:36] ENTRADA (movimento 1, na fila: 1)
+         ESP32 confirmou o movimento 1: 62 vagas livres
+```
+
+Se o ESP32 não responder, os movimentos esperam numa fila e são enviados quando ele voltar. O ESP32 ignora reenvios, então nada é contado duas vezes.
+
+Na primeira vez, o **Firewall do Windows** pergunta se o Python pode usar a rede. Permita, inclusive em **redes públicas** se a rede estiver classificada assim.
 
 ---
 
-## 9. Abrir o painel no celular
+## 5. Calibrar as faixas
 
-1. Conecte o celular à **mesma rede** do notebook (não ao 4G).
-2. No navegador, digite o endereço que o terminal mostrou, **com `http://` e `:8000`**. Por exemplo: `http://10.64.69.164:8000`.
-3. Dica: no Chrome, use *menu → Adicionar à tela inicial* para abrir o painel como um app.
+A **faixa A** fica do lado da **rua** e a **faixa B** do lado de **dentro**. **A → B = entrada** e **B → A = saída**.
 
-O painel atualiza duas vezes por segundo e mostra:
+1. Prenda o celular acima da passagem, olhando para baixo. Ele **não pode se mexer**: o programa compara cada quadro com o fundo aprendido.
+2. Abra a página de calibração que o `visao.py` mostra ao iniciar (`http://IP_DO_NOTEBOOK:8000`), no notebook ou no celular.
+3. Toque em **faixa A (rua)** e depois na imagem, onde a faixa deve ficar. Repita com a **faixa B (dentro)**. Na janela do OpenCV, o botão esquerdo do mouse posiciona a A e o direito a B.
+4. Se os veículos andam de cima para baixo na imagem, toque em **Girar faixas** (ou aperte **o** na janela).
+5. Deixe a distância entre as faixas **menor que o comprimento do carrinho**: assim o mesmo veículo cobre A e B ao mesmo tempo em algum momento.
+6. Depois de mexer na câmera ou se a luz mudar, toque em **Reaprender fundo** (ou aperte **f**).
+7. Passe um carrinho entrando e confira na página: **entradas** sobe e **vagas livres** desce. Se o sentido sair trocado, rode com `--inverter`.
 
-- **Frase-resumo:** total, sentidos e diferença entre câmera e ESP32. Fica em vermelho quando o ESP32 está desconectado.
-- **Câmera do celular:** imagem ao vivo, estado das faixas A e B, total, ida, volta e a proporção ida × volta. Com `--sem-camera`, mostra como ligar a câmera.
-- **Nó ESP32:** conexão e IP, sinal Wi-Fi, distância do ultrassom em relação ao chão, faixas, total, sentidos e leves × pesados. Mostra um aviso amarelo quando há passagens na fila esperando envio.
-- **Comparação:** câmera × ESP32 por sentido e um gráfico de passagens por hora das últimas 12 horas (inclui o histórico do CSV).
-- **Últimas passagens** das duas fontes, com a mais nova no topo e um destaque rápido na linha nova.
-- Botão **Baixar CSV**.
-
-Se aparecer o aviso vermelho **"Sem conexão com o notebook"**, o celular perdeu o notebook (Wi-Fi caiu ou o programa foi encerrado). O aviso some sozinho quando a conexão volta.
-
-A página fica na pasta `painel/`, e as fontes são servidas pelo próprio notebook. Nada é carregado da internet, então o painel funciona numa rede sem acesso externo.
+Teclas na janela: `q` sai, `f` reaprende o fundo, `o` gira as faixas.
 
 ---
 
-## 10. Testar a precisão e analisar os dados
+## 6. Painel web: rodar no notebook
 
-### Roteiro de teste
+```bash
+cd web
+npm install
+copy .env.example .env.local      (no Linux/macOS: cp .env.example .env.local)
+```
 
-1. Ligue tudo e confirme no painel: câmera com imagem, ESP32 **conectado** e faixas **livres**.
-2. Aperte **r** na janela para zerar as contagens.
-3. **Grave um vídeo** do teste com outro celular, para conferir depois quantas vezes precisar.
-4. Passe **20 carrinhos**, misturando sentidos e tamanhos, e anote numa folha a contagem manual (sentido de cada um).
-5. Compare a contagem manual com a câmera e com o ESP32 na folha **Comparação** do painel.
-6. Calcule a precisão de cada método: `acertos ÷ total manual × 100`.
-7. Repita mudando uma coisa por vez: velocidade, iluminação, distância entre faixas, `--ocupacao`, `ALTURA_PESADO_CM`.
+Preencha o `web/.env.local`:
 
-### O arquivo CSV
+```
+INGEST_TOKEN=o-mesmo-token-do-segredos.h
+ADMIN_PIN=um-pin-para-corrigir-a-contagem
+```
 
-Cada passagem vira uma linha em `contagens.csv`, com as colunas:
+Sem as variáveis do Upstash, a API guarda tudo **na memória**: serve para testar, mas os dados somem quando o servidor reinicia. O painel avisa quando isso acontece.
 
-| Coluna | Exemplo | Significado |
-|---|---|---|
-| `data_hora` | `2026-10-27T14:40:36` | Data e hora no relógio do notebook. Nas passagens do ESP32, desconta o tempo que o evento esperou na fila. |
-| `fonte` | `camera` ou `esp32` | Quem contou. |
-| `sentido` | `ida` ou `volta` | A→B é ida; B→A é volta. |
-| `altura_cm` | `3.2` | Só no ESP32: altura medida pelo ultrassom. |
-| `categoria` | `leve` ou `pesado` | Só no ESP32: classificação pela altura. |
+```bash
+npm run dev
+```
 
-No Excel ou no Google Planilhas, use **Dados → Texto para colunas** (separador vírgula) se tudo cair numa coluna só. Com uma **tabela dinâmica** dá para montar contagem por hora, por sentido, por fonte e por categoria.
+O painel abre em `http://localhost:3000`, ou em `http://IP_DO_NOTEBOOK:3000` no celular. Para a placa publicar nele, use `URL_API = "http://IP_DO_NOTEBOOK:3000"` no `segredos.h`. O Windows pode pedir para liberar o Node.js no Firewall.
+
+Para conferir o build de produção: `npm run build`.
 
 ---
 
-## 11. Referência técnica
+## 7. Painel web: publicar na Vercel
 
-### Como a câmera conta
+1. **Conta e CLI:** crie a conta em <https://vercel.com> e instale a CLI: `npm i -g vercel`.
+2. **Projeto:** dentro de `web/`, rode `vercel login` e depois `vercel link`. Crie um projeto novo. O diretório raiz é a própria pasta `web` (se criar pelo site, importando do GitHub, configure **Root Directory = `web`**).
+3. **Banco:** no painel da Vercel, abra o projeto → **Storage** → **Create Database** → **Upstash for Redis** (Marketplace). Conecte o banco ao projeto. A integração cria as variáveis `KV_REST_API_URL` e `KV_REST_API_TOKEN` sozinha.
+4. **Variáveis:** em **Settings → Environment Variables**, cadastre `INGEST_TOKEN` (o mesmo do `segredos.h`) e `ADMIN_PIN`. Pela CLI: `vercel env add INGEST_TOKEN production` e `vercel env add ADMIN_PIN production`.
+5. **Deploy:** `vercel --prod`. A CLI mostra a URL, por exemplo `https://estacionamento-xyz.vercel.app`.
+6. **ESP32:** coloque essa URL em `URL_API` no `segredos.h` e grave a placa de novo (parte 3.3). Em até 30 s o painel mostra **conectado**.
 
-1. Cada quadro é reduzido para 320 px de largura e suavizado para diminuir o ruído.
-2. Cada faixa guarda uma imagem de referência (fundo), atualizada devagar enquanto está livre, para acompanhar mudanças de luz.
-3. A faixa é comparada com o fundo **em cores**. Um pixel é considerado alterado se algum canal mudar mais de 25 (numa escala de 0 a 255). Em tons de cinza, um carro vermelho sobre asfalto cinza pode ter o mesmo brilho do fundo e passar despercebido.
-4. Se mais de 5% dos pixels mudarem (`--ocupacao`) em dois quadros seguidos, a faixa é considerada ocupada.
-5. A ocupada antes de B conta **ida**; B antes de A conta **volta**. Se só uma faixa for ocupada por mais de 3 s, o evento é descartado.
-6. O sistema espera as duas faixas ficarem livres antes de aceitar a próxima passagem.
+Teste a API publicada:
 
-### Como o ESP32 conta
+```bash
+curl https://estacionamento-xyz.vercel.app/api/estado
+```
 
-- O instante em que cada faixa é ocupada é marcado por interrupção. Assim a ordem A/B não se perde, mesmo enquanto a placa mede o ultrassom.
-- Durante a passagem, o ultrassom guarda a menor distância medida. A altura do veículo é a distância até o chão menos essa menor distância.
-- A passagem termina quando as duas faixas ficam livres. Se só uma faixa foi acionada, o evento é descartado.
-- As passagens vão para uma fila e só saem dela quando o notebook confirma o recebimento. Se o Wi-Fi cair, nada se perde, e o notebook ignora reenvios duplicados (pelo par `boot` + `seq`).
-- A cada 2 s a placa envia um sinal de vida com o estado dos sensores. É ele que aparece no painel. Sem sinal de vida por 10 s, o painel mostra "desconectado".
+Variáveis do projeto (nomes também em `web/.env.example`):
 
-### Endereços do servidor
+| Variável | Para que serve |
+|---|---|
+| `INGEST_TOKEN` | Senha do ESP32 para publicar (`Authorization: Bearer ...`). |
+| `ADMIN_PIN` | PIN para corrigir a contagem pelo painel. |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | Upstash Redis. A integração cria. `UPSTASH_REDIS_REST_URL/TOKEN` também servem. |
+
+---
+
+## 8. Testes sem hardware
+
+**Visão sem câmera e sem placa:** gere um vídeo e use o ESP32 simulado.
+
+```bash
+python testes/gerar_video.py teste.mp4            # 6 entradas, 3 saídas e 1 alarme falso
+python testes/esp32_simulado.py                   # em outro terminal (porta 8081)
+python visao.py --fonte teste.mp4 --esp32 127.0.0.1:8081 --sem-janela
+```
+
+O simulador deve terminar com 6 entradas, 3 saídas e 3 ocupadas. A sequência do vídeo pode ser escolhida: `python testes/gerar_video.py teste.mp4 EESESEEES` (E = entrada, S = saída).
+
+**API sem placa:** com o `npm run dev` rodando, simule uma publicação do ESP32 (no Git Bash):
+
+```bash
+curl -X POST http://localhost:3000/api/estado \
+  -H "Authorization: Bearer SEU_TOKEN" -H "Content-Type: application/json" \
+  -d '{"instancia":1,"seq":1,"vagas":100,"ocupadas":1,"ajuste_aplicado":0,"ip":"10.0.0.2","rssi":-60,"uptime_s":10,
+       "movimentos":[{"seq":1,"tipo":"entrada","ocupadas":1,"limitado":false,"atraso_ms":0}]}'
+```
+
+Com o token errado a resposta é **401**. Repetindo o mesmo envio, `"novos"` vem 0, porque a duplicata é ignorada.
+
+---
+
+## 9. Referência técnica
+
+### Como a câmera detecta o sentido
+
+- Cada quadro é reduzido para 320 px de largura e suavizado.
+- Cada faixa guarda uma imagem de fundo, que se atualiza devagar enquanto a faixa está livre.
+- A faixa é comparada com o fundo **em cores**: um pixel conta como alterado se algum canal mudar mais de 25 (de 0 a 255). Se mais de 5% dos pixels mudarem (`--ocupacao`) em dois quadros seguidos, a faixa está ocupada.
+- A ocupada antes de B = entrada; B antes de A = saída. Se só uma faixa for ocupada por mais de 3 s, o evento é descartado. As duas precisam ficar livres antes da próxima passagem.
+
+### O que o ESP32 faz
+
+- **`POST /movimento`** (do notebook), com `{"sentido": "entrada", "sessao": "a1b2", "id": 7}`. Soma ou subtrai uma vaga ocupada, sempre entre 0 e 100. Um `(sessao, id)` repetido não conta de novo.
+- **`GET /estado`**: vagas, ocupadas, livres, indicador, LEDs, fila da nuvem, IP e sinal.
+- **`GET /`**: página simples com o número de vagas, para quando não houver internet.
+- **Flash:** ocupadas, sequência e último ajuste ficam gravados com `Preferences`. A contagem sobrevive a reset e a falta de energia.
+- **Indicador:** verde abaixo de 90% de ocupação, amarelo de 90% a 99% e vermelho em 100%. O LED azul da placa acende quando lota.
+- **Nuvem:**
+  - publica em `URL_API/api/estado` a cada movimento e a cada 30 s (sinal de vida);
+  - os movimentos ficam numa fila de até 40 e vão em lotes de até 10;
+  - se a internet cair, tenta de novo a cada 5 s;
+  - cada movimento tem um número de sequência, e a API ignora os que já recebeu.
+- **HTTPS:** usa `WiFiClientSecure` com `setInsecure()`. A conexão é cifrada, mas o certificado da Vercel não é validado, o que é aceitável num projeto acadêmico. Para validar, troque por `setCACert()` com o certificado raiz (há um comentário no código explicando como).
+
+### Correção manual da contagem
+
+O painel tem o botão **Corrigir contagem**: informe quantos veículos estão no estacionamento e o PIN.
+
+- **O ajuste viaja na resposta do sinal de vida.** A API guarda o ajuste como pendente e o devolve na resposta da próxima publicação do ESP32, em até 30 s. O ESP32 aplica, grava na flash, acende o LED certo e confirma no envio seguinte. Assim a placa continua sendo a dona da contagem, sem endpoint nem consulta extra.
+- **O PIN aceita no máximo 5 erros a cada 10 minutos** por endereço.
+
+### API (Vercel)
 
 | Endereço | Uso |
 |---|---|
-| `GET /` | painel web |
-| `GET /dados` | JSON com as contagens das duas fontes, as últimas passagens e `por_hora` |
-| `GET /quadro.jpg` | imagem atual da câmera com as faixas desenhadas (503 sem câmera) |
-| `GET /contagens.csv` | registro completo |
-| `GET /painel/...` | estilo, script e fontes do painel |
-| `POST /evento` | passagem enviada pelo ESP32 |
-| `POST /status` | sinal de vida do ESP32 |
+| `GET /api/estado` | Estado atual, últimos 50 movimentos, entradas e saídas por hora de hoje, ajuste pendente. |
+| `POST /api/estado` | Publicação do ESP32. Exige `Authorization: Bearer <INGEST_TOKEN>`. Responde `{"ok":true,"novos":2,"ajuste":null}`. |
+| `POST /api/ajuste` | `{"ocupadas": 42, "pin": "..."}`. Corrige a contagem (protegido pelo `ADMIN_PIN`). |
 
-Exemplo de `GET /dados`:
-
-```json
-{
-  "camera": {"total": 12, "ida": 7, "volta": 5, "faixa_a": false, "faixa_b": false},
-  "esp32": {"online": true, "total": 11, "ida": 7, "volta": 4, "leves": 9, "pesados": 2,
-            "status": {"ip": "10.64.69.162", "rssi": -66, "faixa_a": false, "faixa_b": false,
-                       "distancia_cm": 24.8, "referencia_cm": 25.0, "pendentes": 0}},
-  "ultimos": [{"data_hora": "2026-10-27T14:40:36", "fonte": "esp32", "sentido": "ida",
-               "altura_cm": 3.2, "categoria": "leve", "id": 22}],
-  "por_hora": [{"hora": "2026-10-27T14", "camera": 12, "esp32": 11}]
-}
-```
-
-`camera` vale `null` com `--sem-camera`, e `esp32.status` vem vazio quando o ESP32 está desconectado.
-
-### Testar o servidor sem a placa
-
-Dá para simular uma passagem do ESP32 com `curl` (no Git Bash, Linux ou macOS):
-
-```bash
-curl -X POST http://localhost:8000/evento -H "Content-Type: application/json" \
-     -d '{"boot":1,"seq":1,"sentido":"ida","altura_cm":3.2,"categoria":"leve"}'
-```
-
-A resposta é `{"ok": true, "novo": true}`. Repetindo o mesmo `seq`, a resposta passa a ser `"novo": false`, porque o reenvio é ignorado.
+No Redis ficam o estado atual, os últimos 50 movimentos e um contador de entradas e saídas por hora de cada dia (guardado por 8 dias). Os horários seguem o fuso de São Paulo.
 
 ---
 
-## 12. Solução de problemas
+## 10. Solução de problemas
 
-| Sintoma | Causa provável | O que fazer |
-|---|---|---|
-| A placa não aparece em nenhuma porta COM | Cabo só de carga ou falta de driver | Troque o cabo; instale o driver CP210x ou CH340. |
-| Gravação para em `Connecting.....` | Placa não entrou em modo de gravação | Segure **BOOT** durante o `Connecting` e solte quando começar a gravar. |
-| `Ultrassom: sem leitura` | Ligação do HC-SR04 ou do divisor | Confira VCC no VIN, TRIG no 5 e ECHO → 1 kΩ → 18 → 2 kΩ → GND. |
-| Altura sempre perto de 0 | A placa ligou com algo na pista | Esvazie a pista e aperte **EN/RST** para recalibrar o chão. |
-| Faixa IR sempre ocupada | Trimpot sensível demais ou lógica invertida | Ajuste o trimpot; se precisar, troque `IR_ATIVO`. |
-| Passagens descartadas ("só uma faixa") | Faixas distantes ou carro rápido demais | Aproxime os sensores ou aumente `TEMPO_MAX_TRAVESSIA_MS`. |
-| ESP32 não conecta no Wi-Fi | Senha errada, rede de 5 GHz ou portal de login | O ESP32 só usa **2,4 GHz**. Confira o `segredos.h`. Redes com login por página não funcionam. |
-| ESP32 conecta, mas o painel mostra "desconectado" | `URL_NOTEBOOK` errado ou Firewall | Use o IP que o programa mostra; libere o Python no Firewall. |
-| O celular não abre o painel | Rede diferente, `https` ou Firewall | Mesma rede, `http://` com `:8000`, Python liberado no perfil da rede (pública ou privada). |
-| Abria antes e agora não abre | O IP do notebook mudou | Veja o novo IP no terminal; regrave o ESP32 com o novo `URL_NOTEBOOK`. |
-| "Sem imagem da câmera" | IP Webcam fechado ou endereço errado | Abra o app; o endereço do `--fonte` termina em `/video`. |
-| Câmera conta carros que não passaram | Sombra, luz mudando ou celular tremendo | Fixe melhor o celular, aperte **f** para reaprender o fundo, aumente `--ocupacao`. |
-| Câmera não detecta carrinhos pequenos | Faixa larga demais para o objeto | Diminua `--ocupacao` (por exemplo 0.03). |
-| Aviso amarelo "passagens na fila" | O ESP32 contou, mas ainda não conseguiu enviar | Aguarde; elas chegam quando a conexão normalizar. |
+| Sintoma | O que fazer |
+|---|---|
+| A placa não aparece em nenhuma porta COM | Troque o cabo (alguns só carregam) e instale o driver CP210x. |
+| `estacionamento.local` não resolve | Use `--esp32 IP_DA_PLACA`, com o IP do Monitor Serial. |
+| `visao.py` mostra "ESP32 sem resposta" | Confira se a placa está na mesma rede e ligada. Os movimentos esperam na fila. |
+| Painel: "Aguardando o primeiro sinal do ESP32" | Confira `URL_API` e `INGEST_TOKEN` no `segredos.h` e veja o Monitor Serial. `HTTP 401` = token diferente do da Vercel. |
+| Painel: "sem sinal há X min" | A placa está sem internet ou desligada. O indicador da entrada continua funcionando. |
+| Painel avisa "dados só na memória" | Falta conectar o Upstash ao projeto na Vercel (parte 7, passo 3). |
+| Contagem errada | Use **Corrigir contagem** no painel e revise a calibração (parte 5). |
+| Sentido trocado | Rode o `visao.py` com `--inverter`. |
+| Câmera conta carros que não passaram | Fixe melhor o celular, toque em **Reaprender fundo** e aumente `--ocupacao`. |
+| Carrinhos pequenos não são detectados | Diminua `--ocupacao` (por exemplo 0.03). |
+| ESP32 não conecta no Wi-Fi | Ele só usa redes de **2,4 GHz**. Redes com login por página web não funcionam. |
 
 ---
 
-## 13. Limitações
+## 11. Limitações
 
-- A câmera não distingue tipos de veículo. O ESP32 só separa leve e pesado pela altura.
-- Veículos colados um no outro podem ser contados como um só.
-- Mudanças bruscas de luz, sombras em movimento e câmera tremendo geram contagens falsas na câmera.
-- Os sensores IR têm alcance de até cerca de 30 cm, então o nó ESP32 é para maquete.
-- O sistema depende de Wi-Fi estável. A câmera reconecta sozinha, e o ESP32 guarda as passagens até conseguir enviar.
-- Redes com login por página web (comum em faculdades) não funcionam com o ESP32. Use uma rede aberta, como a BDAG, ou o hotspot do celular.
+- **Entrada e saída pela mesma passagem:** dois veículos se cruzando ao mesmo tempo, ou um colado no outro, podem ser contados como um só ou descartados.
+- **Veículos lado a lado** ocupam as faixas juntos, e a ordem A/B fica ambígua (o evento é descartado).
+- **Mudança de luz**, sombras em movimento e câmera tremendo geram contagens falsas.
+- **A contagem depende da calibração.** Os erros se acumulam com o tempo, então a **correção manual** faz parte da operação (por exemplo, conferir no início do dia).
+- **O notebook precisa ficar ligado** para a câmera contar. Sem ele, o ESP32 mantém o último número e o indicador continua aceso, mas não vê novos movimentos.
+- **Sem internet**, o painel na Vercel fica desatualizado e avisa "sem sinal". O indicador da entrada e a página `http://estacionamento.local/` continuam funcionando na rede local.
+- **Fila do ESP32 em RAM:** se a placa reiniciar sem internet, os movimentos ainda não publicados somem do histórico do painel, mas a contagem fica certa (está na flash).

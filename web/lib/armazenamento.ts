@@ -1,0 +1,175 @@
+// Onde o estado do estacionamento fica guardado.
+//
+// Em produção: Upstash Redis (integração do Marketplace da Vercel). A integração cria as
+// variáveis KV_REST_API_URL e KV_REST_API_TOKEN; as do Upstash direto (UPSTASH_REDIS_REST_URL
+// e UPSTASH_REDIS_REST_TOKEN) também servem.
+//
+// RESERVA EM MEMÓRIA: se nenhuma dessas variáveis existir, os dados ficam na memória do
+// processo. Isso é só para testar no notebook antes de criar o banco: os dados somem quando o
+// servidor reinicia e, na Vercel, cada instância teria a sua própria memória. O painel mostra
+// um aviso sempre que esta reserva estiver em uso.
+
+import { Redis } from "@upstash/redis";
+import type { Ajuste, EstadoEsp, Movimento } from "./tipos";
+
+const MAX_MOVIMENTOS = 50;
+const DIAS_HISTORICO = 8;
+const PREFIXO = "estacionamento:";
+
+export interface Armazenamento {
+  tipo: "redis" | "memoria";
+  lerEstado(): Promise<EstadoEsp | null>;
+  salvarEstado(estado: EstadoEsp): Promise<void>;
+  /** Grava movimentos novos (mais antigos primeiro) e soma entradas/saídas no dia e hora indicados. */
+  registrarMovimentos(itens: { movimento: Movimento; dia: string; hora: number }[]): Promise<void>;
+  lerMovimentos(): Promise<Movimento[]>;
+  /** Entradas e saídas por hora de um dia ("AAAA-MM-DD"); chaves "HH:entrada" e "HH:saida". */
+  lerHoras(dia: string): Promise<Record<string, number>>;
+  lerAjuste(): Promise<Ajuste | null>;
+  salvarAjuste(ajuste: Ajuste): Promise<void>;
+  limparAjuste(): Promise<void>;
+  proximoIdAjuste(minimo: number): Promise<number>;
+  /** Conta uma tentativa errada de PIN e devolve quantas houve na janela de tempo. */
+  registrarErroPin(chave: string, janelaS: number): Promise<number>;
+  errosPin(chave: string): Promise<number>;
+}
+
+function campoHora(hora: number, tipo: "entrada" | "saida") {
+  return `${String(hora).padStart(2, "0")}:${tipo}`;
+}
+
+// ---------------------------------------------------------------- Upstash Redis
+
+class ArmazenamentoRedis implements Armazenamento {
+  tipo = "redis" as const;
+  constructor(private redis: Redis) {}
+
+  lerEstado() {
+    return this.redis.get<EstadoEsp>(PREFIXO + "estado");
+  }
+  async salvarEstado(estado: EstadoEsp) {
+    await this.redis.set(PREFIXO + "estado", estado);
+  }
+  async registrarMovimentos(itens: { movimento: Movimento; dia: string; hora: number }[]) {
+    if (!itens.length) return;
+    const p = this.redis.pipeline();
+    for (const { movimento, dia, hora } of itens) {
+      p.lpush(PREFIXO + "movimentos", movimento);
+      if (movimento.tipo !== "ajuste") {
+        p.hincrby(PREFIXO + "horas:" + dia, campoHora(hora, movimento.tipo), 1);
+        p.expire(PREFIXO + "horas:" + dia, DIAS_HISTORICO * 86400);
+      }
+    }
+    p.ltrim(PREFIXO + "movimentos", 0, MAX_MOVIMENTOS - 1);
+    await p.exec();
+  }
+  async lerMovimentos() {
+    return (await this.redis.lrange<Movimento>(PREFIXO + "movimentos", 0, MAX_MOVIMENTOS - 1)) ?? [];
+  }
+  async lerHoras(dia: string) {
+    return (await this.redis.hgetall<Record<string, number>>(PREFIXO + "horas:" + dia)) ?? {};
+  }
+  lerAjuste() {
+    return this.redis.get<Ajuste>(PREFIXO + "ajuste");
+  }
+  async salvarAjuste(ajuste: Ajuste) {
+    await this.redis.set(PREFIXO + "ajuste", ajuste);
+  }
+  async limparAjuste() {
+    await this.redis.del(PREFIXO + "ajuste");
+  }
+  async proximoIdAjuste(minimo: number) {
+    const id = await this.redis.incr(PREFIXO + "ajuste:contador");
+    if (id > minimo) return id;
+    await this.redis.set(PREFIXO + "ajuste:contador", minimo + 1);
+    return minimo + 1;
+  }
+  async registrarErroPin(chave: string, janelaS: number) {
+    const k = PREFIXO + "pin:" + chave;
+    const n = await this.redis.incr(k);
+    if (n === 1) await this.redis.expire(k, janelaS);
+    return n;
+  }
+  async errosPin(chave: string) {
+    return (await this.redis.get<number>(PREFIXO + "pin:" + chave)) ?? 0;
+  }
+}
+
+// ---------------------------------------------------------------- reserva em memória
+
+class ArmazenamentoMemoria implements Armazenamento {
+  tipo = "memoria" as const;
+  private estado: EstadoEsp | null = null;
+  private movimentos: Movimento[] = [];
+  private horas = new Map<string, Record<string, number>>();
+  private ajuste: Ajuste | null = null;
+  private contadorAjuste = 0;
+  private pins = new Map<string, { n: number; expira: number }>();
+
+  async lerEstado() {
+    return this.estado;
+  }
+  async salvarEstado(estado: EstadoEsp) {
+    this.estado = estado;
+  }
+  async registrarMovimentos(itens: { movimento: Movimento; dia: string; hora: number }[]) {
+    for (const { movimento, dia, hora } of itens) {
+      this.movimentos.unshift(movimento);
+      if (movimento.tipo !== "ajuste") {
+        const h = this.horas.get(dia) ?? {};
+        const campo = campoHora(hora, movimento.tipo);
+        h[campo] = (h[campo] ?? 0) + 1;
+        this.horas.set(dia, h);
+      }
+    }
+    this.movimentos.length = Math.min(this.movimentos.length, MAX_MOVIMENTOS);
+  }
+  async lerMovimentos() {
+    return this.movimentos;
+  }
+  async lerHoras(dia: string) {
+    return this.horas.get(dia) ?? {};
+  }
+  async lerAjuste() {
+    return this.ajuste;
+  }
+  async salvarAjuste(ajuste: Ajuste) {
+    this.ajuste = ajuste;
+  }
+  async limparAjuste() {
+    this.ajuste = null;
+  }
+  async proximoIdAjuste(minimo: number) {
+    this.contadorAjuste = Math.max(this.contadorAjuste, minimo) + 1;
+    return this.contadorAjuste;
+  }
+  async registrarErroPin(chave: string, janelaS: number) {
+    const agora = Date.now();
+    const atual = this.pins.get(chave);
+    const item = atual && atual.expira > agora ? atual : { n: 0, expira: agora + janelaS * 1000 };
+    item.n++;
+    this.pins.set(chave, item);
+    return item.n;
+  }
+  async errosPin(chave: string) {
+    const item = this.pins.get(chave);
+    return item && item.expira > Date.now() ? item.n : 0;
+  }
+}
+
+// ---------------------------------------------------------------- escolha
+
+const globalParaHmr = globalThis as unknown as { __armazenamento?: Armazenamento };
+
+export function armazenamento(): Armazenamento {
+  if (globalParaHmr.__armazenamento) return globalParaHmr.__armazenamento;
+  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (url && token) {
+    globalParaHmr.__armazenamento = new ArmazenamentoRedis(new Redis({ url, token }));
+  } else {
+    console.warn("[estacionamento] Upstash Redis não configurado: usando memória (só para teste local).");
+    globalParaHmr.__armazenamento = new ArmazenamentoMemoria();
+  }
+  return globalParaHmr.__armazenamento;
+}
