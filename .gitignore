@@ -1,8 +1,9 @@
 # senha do Wi-Fi e token do ESP32 (use esp32_estacionamento/segredos.exemplo.h como modelo)
 segredos.h
 
-# vídeos de teste
+# vídeos e saídas dos testes
 *.mp4
+testes/saida/
 
 # Python
 __pycache__/

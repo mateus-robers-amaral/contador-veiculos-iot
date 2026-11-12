@@ -34,7 +34,7 @@ Projeto da FATEC Pompeia (Big Data no Agronegócio). Um estacionamento de **100 
 5. [Calibrar as faixas](#5-calibrar-as-faixas)
 6. [Painel web: rodar no notebook](#6-painel-web-rodar-no-notebook)
 7. [Painel web: publicar na Vercel](#7-painel-web-publicar-na-vercel)
-8. [Testes sem hardware](#8-testes-sem-hardware)
+8. [Validação por simulação (sem hardware)](#8-validação-por-simulação-sem-hardware)
 9. [Referência técnica](#9-referência-técnica)
 10. [Solução de problemas](#10-solução-de-problemas)
 11. [Limitações](#11-limitações)
@@ -51,9 +51,12 @@ contador-veiculos-iot/
 │   ├── lib/                      regras do estacionamento e acesso ao banco
 │   └── .env.example              nomes das variáveis de ambiente
 ├── testes/
+│   ├── demonstracao.py           roda a cadeia inteira por simulação (um comando)
 │   ├── gerar_video.py            vídeo sintético com entradas e saídas
-│   └── esp32_simulado.py         imita o ESP32 para testar a visão sem a placa
-└── teste_esp32/                  teste rápido de uma placa nova (LED + busca de redes)
+│   └── esp32_simulado.py         imita o ESP32 (parte local e publicação na nuvem)
+├── teste_esp32/                  teste rápido de uma placa nova (LED + busca de redes)
+├── docs/                         capturas do painel, relatórios das versões anteriores e o prompt usado
+└── relatorio_estacionamento_iot.docx   relatório final do trabalho
 ```
 
 ---
@@ -124,7 +127,7 @@ const char* INGEST_TOKEN = "um-token-longo-e-aleatorio";  // igual ao da Vercel
 ```
 
 - Para gerar o token: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-- Antes do deploy, dá para usar `URL_API = "http://IP_DO_NOTEBOOK:3000"` e testar com o painel rodando no notebook (parte 6).
+- **Qual URL usar:** para testes no laboratório, `URL_API = "http://IP_DO_NOTEBOOK:3000"` publica no painel rodando no notebook (parte 6). Só troque pela URL da Vercel se quiser que a placa real apareça no painel público; a demonstração por simulação (parte 8) não usa a placa.
 - Com `URL_API = ""`, a placa funciona só na rede local: indicador e página `http://estacionamento.local/`.
 - O `segredos.h` está no `.gitignore`: senha e token nunca vão para o GitHub.
 
@@ -250,11 +253,13 @@ Para conferir o build de produção: `npm run build`.
 
 ## 7. Painel web: publicar na Vercel
 
+O projeto já está na Vercel como **estacionamento-iot**, em **<https://estacionamento-iot.vercel.app>**, com a pasta raiz `web` e as variáveis `INGEST_TOKEN` e `ADMIN_PIN` cadastradas. Os passos abaixo servem para refazer do zero ou para outra conta.
+
 1. **Conta e CLI:** crie a conta em <https://vercel.com> e instale a CLI: `npm i -g vercel`.
 2. **Projeto:** dentro de `web/`, rode `vercel login` e depois `vercel link`. Crie um projeto novo. O diretório raiz é a própria pasta `web` (se criar pelo site, importando do GitHub, configure **Root Directory = `web`**).
 3. **Banco:** no painel da Vercel, abra o projeto → **Storage** → **Create Database** → **Upstash for Redis** (Marketplace). Conecte o banco ao projeto. A integração cria as variáveis `KV_REST_API_URL` e `KV_REST_API_TOKEN` sozinha.
 4. **Variáveis:** em **Settings → Environment Variables**, cadastre `INGEST_TOKEN` (o mesmo do `segredos.h`) e `ADMIN_PIN`. Pela CLI: `vercel env add INGEST_TOKEN production` e `vercel env add ADMIN_PIN production`.
-5. **Deploy:** `vercel --prod`. A CLI mostra a URL, por exemplo `https://estacionamento-xyz.vercel.app`.
+5. **Deploy:** o projeto está ligado ao GitHub, então **cada push na `main` publica sozinho** em produção (e cada branch ganha uma URL de prévia). Também dá para publicar à mão com `vercel --prod` de dentro de `web/`.
 6. **ESP32:** coloque essa URL em `URL_API` no `segredos.h` e grave a placa de novo (parte 3.3). Em até 30 s o painel mostra **conectado**.
 
 Teste a API publicada:
@@ -273,28 +278,68 @@ Variáveis do projeto (nomes também em `web/.env.example`):
 
 ---
 
-## 8. Testes sem hardware
+## 8. Validação por simulação (sem hardware)
 
-**Visão sem câmera e sem placa:** gere um vídeo e use o ESP32 simulado.
+O teste completo com celular, placa e carrinhos foi **substituído por simulação**. A simulação roda a mesma cadeia do sistema real, com o mesmo código de visão, as mesmas regras do ESP32 e a mesma API, trocando só a câmera por um vídeo sintético e a placa por um programa que imita o firmware:
+
+```
+vídeo sintético -> visao.py (OpenCV) -> ESP32 simulado -> API /api/estado -> painel web
+```
+
+### 8.1 Um comando
 
 ```bash
-python testes/gerar_video.py teste.mp4            # 6 entradas, 3 saídas e 1 alarme falso
-python testes/esp32_simulado.py                   # em outro terminal (porta 8081)
+python testes/demonstracao.py
+```
+
+Gera o vídeo (6 entradas, 3 saídas e 1 alarme falso), liga o ESP32 simulado, roda o `visao.py` e confere se a contagem bate com o vídeo. Saída esperada:
+
+```
+   ESP32 simulado: 6 entradas, 3 saídas, 3 ocupadas, 97 vagas livres (confere com o vídeo)
+Resultado: OK, a cadeia inteira funcionou.
+```
+
+**Com o painel:** suba o painel (parte 6, `npm run dev`) ou use a URL da Vercel e passe `--api`. O ESP32 simulado publica no painel do mesmo jeito que a placa (mesmo formato, mesmo token do `segredos.h`):
+
+```bash
+python testes/demonstracao.py --api http://127.0.0.1:3000
+python testes/demonstracao.py --api https://SEU-PROJETO.vercel.app
+```
+
+**Para apresentar:** `--continuar 4` mantém o painel vivo depois do vídeo, com uma entrada ou saída aleatória a cada 4 s (Ctrl+C para parar). A sequência do vídeo pode ser escolhida com `--sequencia EESESEEES` (E = entrada, S = saída).
+
+> No Windows, se `localhost` abrir outro projeto, use `127.0.0.1`.
+
+### 8.2 Peça por peça
+
+```bash
+python testes/gerar_video.py teste.mp4                              # vídeo sintético
+python testes/esp32_simulado.py --api http://127.0.0.1:3000         # outro terminal (porta 8081)
 python visao.py --fonte teste.mp4 --esp32 127.0.0.1:8081 --sem-janela
 ```
 
-O simulador deve terminar com 6 entradas, 3 saídas e 3 ocupadas. A sequência do vídeo pode ser escolhida: `python testes/gerar_video.py teste.mp4 EESESEEES` (E = entrada, S = saída).
+O ESP32 simulado aceita `--ocupadas 95` (para ver o indicador mudar para quase lotado e lotado), `--aleatorio N` (movimentos sozinho a cada N s) e `--token` (se não quiser ler do `segredos.h`). Sem `--api`, ele só faz a parte local.
 
-**API sem placa:** com o `npm run dev` rodando, simule uma publicação do ESP32 (no Git Bash):
+### 8.3 API sem placa
+
+Com o painel rodando, simule uma publicação do ESP32 (no Git Bash):
 
 ```bash
-curl -X POST http://localhost:3000/api/estado \
-  -H "Authorization: Bearer SEU_TOKEN" -H "Content-Type: application/json" \
-  -d '{"instancia":1,"seq":1,"vagas":100,"ocupadas":1,"ajuste_aplicado":0,"ip":"10.0.0.2","rssi":-60,"uptime_s":10,
+curl -X POST http://127.0.0.1:3000/api/estado   -H "Authorization: Bearer SEU_TOKEN" -H "Content-Type: application/json"   -d '{"instancia":1,"seq":1,"vagas":100,"ocupadas":1,"ajuste_aplicado":0,"ip":"10.0.0.2","rssi":-60,"uptime_s":10,
        "movimentos":[{"seq":1,"tipo":"entrada","ocupadas":1,"limitado":false,"atraso_ms":0}]}'
 ```
 
 Com o token errado a resposta é **401**. Repetindo o mesmo envio, `"novos"` vem 0, porque a duplicata é ignorada.
+
+### 8.4 O que já foi verificado
+
+| Verificação | Como | Resultado |
+|---|---|---|
+| Visão conta entradas e saídas e ignora o alarme falso | `demonstracao.py` | 6 entradas, 3 saídas |
+| ESP32 aplica as regras (limites 0–100, repetidos ignorados) | ESP32 simulado | 3 ocupadas, 97 livres |
+| Publicação na API com token | `demonstracao.py --api` | painel mostra 97 livres e os movimentos |
+| Token errado é recusado | `curl` | HTTP 401 |
+| Firmware compila e a placa conecta ao Wi-Fi | `arduino-cli` + Monitor Serial | ok (ESP32-D0WD-V3, rede BDAG) |
 
 ---
 
