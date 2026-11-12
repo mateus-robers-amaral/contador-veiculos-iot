@@ -16,8 +16,8 @@ esp32_estacionamento/segredos.h, o mesmo arquivo da placa.
 Uso:
     python testes/esp32_simulado.py                                   (porta 8081, 100 vagas)
     python testes/esp32_simulado.py --ocupadas 95
-    python testes/esp32_simulado.py --api http://localhost:3000       (publica no painel local)
-    python testes/esp32_simulado.py --api https://SEU-PROJETO.vercel.app --aleatorio 4
+    python testes/esp32_simulado.py --api http://127.0.0.1:3000       (publica no painel do notebook)
+    python testes/esp32_simulado.py --api http://127.0.0.1:3000 --aleatorio 4
 Depois:
     python visao.py --fonte teste.mp4 --esp32 127.0.0.1:8081 --sem-janela
 """

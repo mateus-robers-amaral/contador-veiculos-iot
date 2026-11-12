@@ -206,7 +206,7 @@ function StatusEsp({ dados, offline, agora, aoAjustar }:
       {dados.armazenamento === "memoria" && (
         <div className="faixa atencao dentro">
           <Icone d={ICONE_ALERTA} />
-          <span>Banco Upstash não configurado: os dados estão só na memória do servidor e somem quando ele reinicia.</span>
+          <span>Painel na nuvem sem o banco Upstash: os dados estão só na memória do servidor e somem quando ele reinicia.</span>
         </div>
       )}
       <button className="botao sec" onClick={aoAjustar}><Icone d={ICONE_LAPIS} />Corrigir contagem</button>
@@ -343,7 +343,7 @@ export default function Painel({ iniciais }: { iniciais: DadosPainel | null }) {
         <section className="folha vazio grande-vazio">
           <span className="icone-redondo cinza"><Icone d={ICONE_SEM_REDE} /></span>
           <strong>O painel não conseguiu falar com o servidor.</strong>
-          <span>Verifique a internet. A página tenta de novo sozinha a cada poucos segundos.</span>
+          <span>Verifique a conexão com a rede. A página tenta de novo sozinha a cada poucos segundos.</span>
         </section>
       )}
 

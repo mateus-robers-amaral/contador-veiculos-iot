@@ -5,8 +5,8 @@
 //  - Grava a contagem na flash (Preferences): faltou energia, nada se perde.
 //  - Acende o indicador na entrada: verde = há vagas, amarelo = quase lotado,
 //    vermelho = lotado. O LED azul da placa acende quando lota (funciona sem LEDs externos).
-//  - Publica o estado na API da Vercel (HTTPS) a cada mudança e a cada 30 s, com fila
-//    e reenvio se a internet cair. A resposta da API pode trazer um ajuste manual da contagem.
+//  - Publica o estado na API do painel (HTTP no notebook; HTTPS se for publicado na Vercel)
+//    a cada mudança e a cada 30 s, com fila e reenvio se o painel não responder. A resposta da API pode trazer um ajuste manual da contagem.
 //  - Anuncia-se como estacionamento.local (mDNS) e mostra as vagas em http://estacionamento.local/
 //
 // Ligações (ver README): LED verde GPIO 25, amarelo GPIO 26, vermelho GPIO 27,
@@ -163,7 +163,7 @@ String lerTexto(const String& json, const String& chave) {
   return (i < 0 || fim < 0) ? "" : json.substring(i + 1, fim);
 }
 
-// ------------------------------------------------------------ nuvem (API na Vercel)
+// ------------------------------------------------------------ publicação no painel (notebook ou Vercel)
 String corpoPublicacao(int quantos) {
   String s = String("{\"instancia\":") + instancia + ",\"seq\":" + seq + ",\"vagas\":" + VAGAS +
              ",\"ocupadas\":" + ocupadas + ",\"ajuste_aplicado\":" + ajusteAplicado +

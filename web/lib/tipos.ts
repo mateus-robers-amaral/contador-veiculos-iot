@@ -41,7 +41,7 @@ export interface HoraDoDia {
 /** Resposta de GET /api/estado. */
 export interface DadosPainel {
   agora: number;
-  armazenamento: "redis" | "memoria";
+  armazenamento: "redis" | "arquivo" | "memoria";
   estado: (Omit<EstadoEsp, "instancia" | "ultimo_mov_seq" | "ajuste_aplicado"> & {
     livres: number;
     indicador: "livre" | "quase" | "lotado";

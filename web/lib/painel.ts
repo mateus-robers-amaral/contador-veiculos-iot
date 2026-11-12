@@ -1,4 +1,4 @@
-// Regras do estacionamento do lado da nuvem: o que fazer com cada publicação do ESP32
+// Regras do estacionamento do lado do painel: o que fazer com cada publicação do ESP32
 // e como montar os dados do painel.
 
 import { timingSafeEqual } from "node:crypto";

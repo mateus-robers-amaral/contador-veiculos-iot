@@ -7,7 +7,7 @@ no notebook, observa duas faixas virtuais na imagem:
     A antes de B = ENTRADA     B antes de A = SAÍDA      (--inverter troca)
 
 Cada movimento é enviado ao ESP32 (POST /movimento), que guarda a contagem oficial,
-acende o indicador na entrada e publica as vagas na nuvem. O notebook não guarda
+acende o indicador na entrada e publica as vagas no painel web. O notebook não guarda
 contagem nenhuma: se o ESP32 estiver fora do ar, os movimentos esperam numa fila.
 
 A página local (http://IP_DO_NOTEBOOK:8000) serve só para calibrar a câmera.

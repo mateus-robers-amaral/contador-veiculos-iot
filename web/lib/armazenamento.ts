@@ -1,23 +1,29 @@
 // Onde o estado do estacionamento fica guardado.
 //
-// Em produção: Upstash Redis (integração do Marketplace da Vercel). A integração cria as
-// variáveis KV_REST_API_URL e KV_REST_API_TOKEN; as do Upstash direto (UPSTASH_REDIS_REST_URL
-// e UPSTASH_REDIS_REST_TOKEN) também servem.
+// NO NOTEBOOK (modo usado no projeto): um arquivo JSON em web/.dados/estacionamento.json.
+// Os dados ficam na memória do processo e são gravados no arquivo a cada mudança, então o
+// histórico sobrevive quando o "npm run dev" é reiniciado. O arquivo fica fora do Git.
 //
-// RESERVA EM MEMÓRIA: se nenhuma dessas variáveis existir, os dados ficam na memória do
-// processo. Isso é só para testar no notebook antes de criar o banco: os dados somem quando o
-// servidor reinicia e, na Vercel, cada instância teria a sua própria memória. O painel mostra
-// um aviso sempre que esta reserva estiver em uso.
+// NA NUVEM (opcional): Upstash Redis (integração do Marketplace da Vercel). A integração cria
+// as variáveis KV_REST_API_URL e KV_REST_API_TOKEN; as do Upstash direto
+// (UPSTASH_REDIS_REST_URL e UPSTASH_REDIS_REST_TOKEN) também servem. Se elas existirem, o
+// Redis é usado mesmo no notebook.
+//
+// Na Vercel sem Redis não dá para gravar arquivo: os dados ficam só na memória, somem quando
+// a função reinicia, e o painel mostra um aviso.
 
+import fs from "node:fs";
+import path from "node:path";
 import { Redis } from "@upstash/redis";
 import type { Ajuste, EstadoEsp, Movimento } from "./tipos";
 
 const MAX_MOVIMENTOS = 50;
 const DIAS_HISTORICO = 8;
 const PREFIXO = "estacionamento:";
+const ARQUIVO_LOCAL = path.join(process.cwd(), ".dados", "estacionamento.json");
 
 export interface Armazenamento {
-  tipo: "redis" | "memoria";
+  tipo: "redis" | "arquivo" | "memoria";
   lerEstado(): Promise<EstadoEsp | null>;
   salvarEstado(estado: EstadoEsp): Promise<void>;
   /** Grava movimentos novos (mais antigos primeiro) e soma entradas/saídas no dia e hora indicados. */
@@ -95,10 +101,19 @@ class ArmazenamentoRedis implements Armazenamento {
   }
 }
 
-// ---------------------------------------------------------------- reserva em memória
+// ---------------------------------------------------------------- notebook (arquivo) ou só memória
 
-class ArmazenamentoMemoria implements Armazenamento {
-  tipo = "memoria" as const;
+/** O que vai para o arquivo. As tentativas de PIN ficam só na memória. */
+interface DadosArquivo {
+  estado: EstadoEsp | null;
+  movimentos: Movimento[];
+  horas: Record<string, Record<string, number>>;
+  ajuste: Ajuste | null;
+  contadorAjuste: number;
+}
+
+class ArmazenamentoLocal implements Armazenamento {
+  tipo: "arquivo" | "memoria";
   private estado: EstadoEsp | null = null;
   private movimentos: Movimento[] = [];
   private horas = new Map<string, Record<string, number>>();
@@ -106,11 +121,51 @@ class ArmazenamentoMemoria implements Armazenamento {
   private contadorAjuste = 0;
   private pins = new Map<string, { n: number; expira: number }>();
 
+  /** Sem arquivo, os dados ficam só na memória. */
+  constructor(private arquivo: string | null) {
+    this.tipo = arquivo ? "arquivo" : "memoria";
+    if (arquivo) this.carregar(arquivo);
+  }
+
+  private carregar(arquivo: string) {
+    if (!fs.existsSync(arquivo)) return;
+    try {
+      const d = JSON.parse(fs.readFileSync(arquivo, "utf8")) as Partial<DadosArquivo>;
+      this.estado = d.estado ?? null;
+      this.movimentos = d.movimentos ?? [];
+      this.horas = new Map(Object.entries(d.horas ?? {}));
+      this.ajuste = d.ajuste ?? null;
+      this.contadorAjuste = d.contadorAjuste ?? 0;
+    } catch (erro) {
+      console.warn(`[estacionamento] Não consegui ler ${arquivo}; começando do zero.`, erro);
+    }
+  }
+
+  private gravar() {
+    if (!this.arquivo) return;
+    // guarda só os últimos dias do gráfico por hora, como o Redis faz com o prazo de expiração
+    for (const dia of [...this.horas.keys()].sort().slice(0, -DIAS_HISTORICO)) this.horas.delete(dia);
+    const dados: DadosArquivo = {
+      estado: this.estado,
+      movimentos: this.movimentos,
+      horas: Object.fromEntries(this.horas),
+      ajuste: this.ajuste,
+      contadorAjuste: this.contadorAjuste,
+    };
+    try {
+      fs.mkdirSync(path.dirname(this.arquivo), { recursive: true });
+      fs.writeFileSync(this.arquivo, JSON.stringify(dados, null, 1));
+    } catch (erro) {
+      console.warn(`[estacionamento] Não consegui gravar ${this.arquivo}.`, erro);
+    }
+  }
+
   async lerEstado() {
     return this.estado;
   }
   async salvarEstado(estado: EstadoEsp) {
     this.estado = estado;
+    this.gravar();
   }
   async registrarMovimentos(itens: { movimento: Movimento; dia: string; hora: number }[]) {
     for (const { movimento, dia, hora } of itens) {
@@ -123,6 +178,7 @@ class ArmazenamentoMemoria implements Armazenamento {
       }
     }
     this.movimentos.length = Math.min(this.movimentos.length, MAX_MOVIMENTOS);
+    this.gravar();
   }
   async lerMovimentos() {
     return this.movimentos;
@@ -135,12 +191,15 @@ class ArmazenamentoMemoria implements Armazenamento {
   }
   async salvarAjuste(ajuste: Ajuste) {
     this.ajuste = ajuste;
+    this.gravar();
   }
   async limparAjuste() {
     this.ajuste = null;
+    this.gravar();
   }
   async proximoIdAjuste(minimo: number) {
     this.contadorAjuste = Math.max(this.contadorAjuste, minimo) + 1;
+    this.gravar();
     return this.contadorAjuste;
   }
   async registrarErroPin(chave: string, janelaS: number) {
@@ -167,9 +226,11 @@ export function armazenamento(): Armazenamento {
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (url && token) {
     globalParaHmr.__armazenamento = new ArmazenamentoRedis(new Redis({ url, token }));
+  } else if (process.env.VERCEL) {
+    console.warn("[estacionamento] Upstash Redis não configurado: usando só a memória da função.");
+    globalParaHmr.__armazenamento = new ArmazenamentoLocal(null);
   } else {
-    console.warn("[estacionamento] Upstash Redis não configurado: usando memória (só para teste local).");
-    globalParaHmr.__armazenamento = new ArmazenamentoMemoria();
+    globalParaHmr.__armazenamento = new ArmazenamentoLocal(ARQUIVO_LOCAL);
   }
   return globalParaHmr.__armazenamento;
 }

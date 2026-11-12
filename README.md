@@ -3,7 +3,9 @@
 Projeto da FATEC Pompeia (Big Data no Agronegócio). Um estacionamento de **100 vagas** tem uma única entrada e saída. A câmera de um celular filma essa passagem, o sistema identifica se cada veículo está **entrando** ou **saindo** e mantém o número de **vagas livres** sempre atualizado:
 
 - num **indicador físico na entrada** (LEDs verde, amarelo e vermelho), controlado pelo ESP32;
-- num **painel web** hospedado na Vercel, que abre no celular de qualquer lugar.
+- num **painel web** que roda no notebook e abre no navegador do celular, pela mesma rede Wi-Fi.
+
+Tudo funciona na **rede Wi-Fi local**, sem internet e sem serviços em nuvem.
 
 ```
 [Celular: IP Webcam] --vídeo (Wi-Fi local)--> [Notebook: visao.py, OpenCV]
@@ -12,18 +14,18 @@ Projeto da FATEC Pompeia (Big Data no Agronegócio). Um estacionamento de **100 
                                   [ESP32: controlador do estacionamento]
                                    - mantém a contagem (gravada na flash)
                                    - acende o indicador: LIVRE / QUASE LOTADO / LOTADO
-                                   - publica o estado na nuvem (HTTPS)
+                                   - publica o estado no painel (HTTP local)
                                                      |
                                                      v
-                         [Vercel: API + Upstash Redis]  <--  [Painel web no celular]
+                      [Notebook: painel web, Next.js]  <--  [Navegador do celular]
 ```
 
 | Parte | Papel |
 |---|---|
 | **Celular** | Só o sensor de imagem (app IP Webcam ou DroidCam). |
-| **Notebook (`visao.py`)** | Processamento de borda: detecta a passagem e o sentido com duas faixas virtuais e manda cada movimento ao ESP32. Não guarda contagem. Tem uma página local só para calibrar a câmera. **A imagem nunca vai para a nuvem.** |
-| **ESP32 (`esp32_estacionamento/`)** | A peça central. Guarda a **contagem oficial** (sobrevive a falta de energia), acende o indicador, publica as vagas na nuvem e aplica correções manuais. Funciona mesmo sem internet. |
-| **Vercel (`web/`)** | API que recebe o estado do ESP32 e painel público com as vagas, o gráfico do dia e os últimos movimentos. |
+| **Notebook (`visao.py`)** | Processamento de borda: detecta a passagem e o sentido com duas faixas virtuais e manda cada movimento ao ESP32. Não guarda contagem. Tem uma página local só para calibrar a câmera. **A imagem não sai do notebook.** |
+| **ESP32 (`esp32_estacionamento/`)** | A peça central. Guarda a **contagem oficial** (sobrevive a falta de energia), acende o indicador, publica as vagas no painel e aplica correções manuais. Se o painel parar, o indicador continua funcionando. |
+| **Painel (`web/`)** | Roda no notebook (`npm run dev`). API que recebe o estado do ESP32 e painel com as vagas, o gráfico do dia e os últimos movimentos. Os dados ficam salvos num arquivo no notebook. |
 
 ## Sumário
 
@@ -33,7 +35,7 @@ Projeto da FATEC Pompeia (Big Data no Agronegócio). Um estacionamento de **100 
 4. [Preparar o notebook e rodar a visão](#4-preparar-o-notebook-e-rodar-a-visão)
 5. [Calibrar as faixas](#5-calibrar-as-faixas)
 6. [Painel web: rodar no notebook](#6-painel-web-rodar-no-notebook)
-7. [Painel web: publicar na Vercel](#7-painel-web-publicar-na-vercel)
+7. [Opcional: publicar na Vercel](#7-opcional-publicar-na-vercel)
 8. [Validação por simulação (sem hardware)](#8-validação-por-simulação-sem-hardware)
 9. [Referência técnica](#9-referência-técnica)
 10. [Solução de problemas](#10-solução-de-problemas)
@@ -43,17 +45,17 @@ Projeto da FATEC Pompeia (Big Data no Agronegócio). Um estacionamento de **100 
 contador-veiculos-iot/
 ├── visao.py                      visão computacional no notebook (câmera -> movimentos)
 ├── requirements.txt              bibliotecas Python (OpenCV e NumPy)
-├── esp32_estacionamento/         programa do ESP32 (contagem, indicador, nuvem)
+├── esp32_estacionamento/         programa do ESP32 (contagem, indicador, publicação)
 │   ├── esp32_estacionamento.ino
 │   └── segredos.exemplo.h        modelo do segredos.h (Wi-Fi, URL da API, token)
-├── web/                          painel e API (Next.js, para a Vercel)
+├── web/                          painel e API (Next.js), roda no notebook
 │   ├── app/                      página, estilo e rotas /api/estado e /api/ajuste
 │   ├── lib/                      regras do estacionamento e acesso ao banco
 │   └── .env.example              nomes das variáveis de ambiente
 ├── testes/
 │   ├── demonstracao.py           roda a cadeia inteira por simulação (um comando)
 │   ├── gerar_video.py            vídeo sintético com entradas e saídas
-│   └── esp32_simulado.py         imita o ESP32 (parte local e publicação na nuvem)
+│   └── esp32_simulado.py         imita o ESP32 (parte local e publicação no painel)
 ├── teste_esp32/                  teste rápido de uma placa nova (LED + busca de redes)
 ├── docs/                         capturas do painel, relatórios das versões anteriores e o prompt usado
 └── relatorio_estacionamento_iot.docx   relatório final do trabalho
@@ -122,12 +124,12 @@ Copie `esp32_estacionamento/segredos.exemplo.h` para `esp32_estacionamento/segre
 ```cpp
 const char* WIFI_SSID    = "BDAG";
 const char* WIFI_SENHA   = "...";                        // rede aberta: ""
-const char* URL_API      = "https://seu-projeto.vercel.app";  // sem barra no final
-const char* INGEST_TOKEN = "um-token-longo-e-aleatorio";  // igual ao da Vercel
+const char* URL_API      = "http://192.168.0.5:3000";     // IP do notebook, sem barra no final
+const char* INGEST_TOKEN = "um-token-longo-e-aleatorio";  // igual ao do web/.env.local
 ```
 
 - Para gerar o token: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-- **Qual URL usar:** para testes no laboratório, `URL_API = "http://IP_DO_NOTEBOOK:3000"` publica no painel rodando no notebook (parte 6). Só troque pela URL da Vercel se quiser que a placa real apareça no painel público; a demonstração por simulação (parte 8) não usa a placa.
+- **Qual URL usar:** o IP do notebook onde roda o painel (parte 6), na porta 3000. No Windows, o IP aparece com `ipconfig`, em *Endereço IPv4* do adaptador Wi-Fi. Se o IP do notebook mudar, atualize o `segredos.h` e grave de novo. A demonstração por simulação (parte 8) não usa a placa.
 - Com `URL_API = ""`, a placa funciona só na rede local: indicador e página `http://estacionamento.local/`.
 - O `segredos.h` está no `.gitignore`: senha e token nunca vão para o GitHub.
 
@@ -151,7 +153,7 @@ Abra o **Monitor Serial** em **115200 baud**:
 Contagem recuperada da flash: 0 ocupadas, 100 livres (livre)
 Conectando ao Wi-Fi "BDAG"...
 Wi-Fi conectado. IP 10.64.69.162, sinal -62 dBm. Também responde em http://estacionamento.local
-Publicando em https://seu-projeto.vercel.app
+Publicando em http://192.168.0.5:3000
 ```
 
 No navegador do notebook, `http://estacionamento.local/` mostra as vagas, e `http://estacionamento.local/estado` mostra o JSON com o estado e os LEDs.
@@ -239,21 +241,23 @@ INGEST_TOKEN=o-mesmo-token-do-segredos.h
 ADMIN_PIN=um-pin-para-corrigir-a-contagem
 ```
 
-Sem as variáveis do Upstash, a API guarda tudo **na memória**: serve para testar, mas os dados somem quando o servidor reinicia. O painel avisa quando isso acontece.
+Os dados ficam em `web/.dados/estacionamento.json` (fora do Git), gravado a cada mudança: o histórico continua lá quando o painel é reiniciado. Para zerar o painel, pare o `npm run dev`, apague a pasta `web/.dados` e rode de novo.
 
 ```bash
 npm run dev
 ```
 
-O painel abre em `http://localhost:3000`, ou em `http://IP_DO_NOTEBOOK:3000` no celular. Para a placa publicar nele, use `URL_API = "http://IP_DO_NOTEBOOK:3000"` no `segredos.h`. O Windows pode pedir para liberar o Node.js no Firewall.
+O painel abre em `http://localhost:3000`, ou em `http://IP_DO_NOTEBOOK:3000` no celular conectado à mesma rede. Para a placa publicar nele, use `URL_API = "http://IP_DO_NOTEBOOK:3000"` no `segredos.h`. O Windows pode pedir para liberar o Node.js no Firewall.
 
 Para conferir o build de produção: `npm run build`.
 
 ---
 
-## 7. Painel web: publicar na Vercel
+## 7. Opcional: publicar na Vercel
 
-O projeto já está na Vercel como **estacionamento-iot**, em **<https://estacionamento-iot.vercel.app>**, com a pasta raiz `web` e as variáveis `INGEST_TOKEN` e `ADMIN_PIN` cadastradas. Os passos abaixo servem para refazer do zero ou para outra conta.
+> **Não faz parte da entrega.** O projeto roda só no notebook (parte 6), o que é mais simples para montar e apresentar. Esta parte fica como referência, caso um dia queiram ver as vagas pela internet.
+
+O código já está pronto para a nuvem. Existe um projeto de teste na Vercel (**estacionamento-iot**, pasta raiz `web`, com `INGEST_TOKEN` e `ADMIN_PIN` cadastrados), mas sem o banco: lá os dados ficam só na memória e o painel mostra um aviso. Para publicar de verdade:
 
 1. **Conta e CLI:** crie a conta em <https://vercel.com> e instale a CLI: `npm i -g vercel`.
 2. **Projeto:** dentro de `web/`, rode `vercel login` e depois `vercel link`. Crie um projeto novo. O diretório raiz é a própria pasta `web` (se criar pelo site, importando do GitHub, configure **Root Directory = `web`**).
@@ -299,14 +303,19 @@ Gera o vídeo (6 entradas, 3 saídas e 1 alarme falso), liga o ESP32 simulado, r
 Resultado: OK, a cadeia inteira funcionou.
 ```
 
-**Com o painel:** suba o painel (parte 6, `npm run dev`) ou use a URL da Vercel e passe `--api`. O ESP32 simulado publica no painel do mesmo jeito que a placa (mesmo formato, mesmo token do `segredos.h`):
+**Com o painel:** suba o painel (parte 6, `npm run dev`) e passe `--api` com o endereço dele. O ESP32 simulado publica no painel do mesmo jeito que a placa (mesmo formato, mesmo token do `segredos.h`):
 
 ```bash
 python testes/demonstracao.py --api http://127.0.0.1:3000
-python testes/demonstracao.py --api https://SEU-PROJETO.vercel.app
 ```
 
-**Para apresentar:** `--continuar 4` mantém o painel vivo depois do vídeo, com uma entrada ou saída aleatória a cada 4 s (Ctrl+C para parar). A sequência do vídeo pode ser escolhida com `--sequencia EESESEEES` (E = entrada, S = saída).
+**Para apresentar:** acrescente `--continuar 4`. Depois do vídeo, o painel continua recebendo uma entrada ou saída aleatória a cada 4 s, como se carros estivessem chegando e saindo (Ctrl+C para parar). Abra o painel no celular pelo IP do notebook para mostrar os números mudando:
+
+```bash
+python testes/demonstracao.py --api http://127.0.0.1:3000 --continuar 4
+```
+
+A sequência do vídeo pode ser escolhida com `--sequencia EESESEEES` (E = entrada, S = saída), e `--ocupadas 95` começa perto de lotar, para mostrar o indicador mudando.
 
 > No Windows, se `localhost` abrir outro projeto, use `127.0.0.1`.
 
@@ -339,6 +348,7 @@ Com o token errado a resposta é **401**. Repetindo o mesmo envio, `"novos"` vem
 | ESP32 aplica as regras (limites 0–100, repetidos ignorados) | ESP32 simulado | 3 ocupadas, 97 livres |
 | Publicação na API com token | `demonstracao.py --api` | painel mostra 97 livres e os movimentos |
 | Token errado é recusado | `curl` | HTTP 401 |
+| Dados mantidos ao reiniciar o painel | reinício do servidor do painel | estado e histórico recuperados do arquivo |
 | Firmware compila e a placa conecta ao Wi-Fi | `arduino-cli` + Monitor Serial | ok (ESP32-D0WD-V3, rede BDAG) |
 
 ---
@@ -355,16 +365,16 @@ Com o token errado a resposta é **401**. Repetindo o mesmo envio, `"novos"` vem
 ### O que o ESP32 faz
 
 - **`POST /movimento`** (do notebook), com `{"sentido": "entrada", "sessao": "a1b2", "id": 7}`. Soma ou subtrai uma vaga ocupada, sempre entre 0 e 100. Um `(sessao, id)` repetido não conta de novo.
-- **`GET /estado`**: vagas, ocupadas, livres, indicador, LEDs, fila da nuvem, IP e sinal.
-- **`GET /`**: página simples com o número de vagas, para quando não houver internet.
+- **`GET /estado`**: vagas, ocupadas, livres, indicador, LEDs, fila de publicação, IP e sinal.
+- **`GET /`**: página simples com o número de vagas, para quando o painel não estiver disponível.
 - **Flash:** ocupadas, sequência e último ajuste ficam gravados com `Preferences`. A contagem sobrevive a reset e a falta de energia.
 - **Indicador:** verde abaixo de 90% de ocupação, amarelo de 90% a 99% e vermelho em 100%. O LED azul da placa acende quando lota.
-- **Nuvem:**
+- **Publicação no painel:**
   - publica em `URL_API/api/estado` a cada movimento e a cada 30 s (sinal de vida);
   - os movimentos ficam numa fila de até 40 e vão em lotes de até 10;
-  - se a internet cair, tenta de novo a cada 5 s;
+  - se o painel não responder, tenta de novo a cada 5 s;
   - cada movimento tem um número de sequência, e a API ignora os que já recebeu.
-- **HTTPS:** usa `WiFiClientSecure` com `setInsecure()`. A conexão é cifrada, mas o certificado da Vercel não é validado, o que é aceitável num projeto acadêmico. Para validar, troque por `setCACert()` com o certificado raiz (há um comentário no código explicando como).
+- **HTTP ou HTTPS:** no notebook a publicação é HTTP. Se a `URL_API` começar com `https://` (Vercel, parte 7), a placa usa `WiFiClientSecure` com `setInsecure()`: a conexão é cifrada, mas o certificado não é validado. Para validar, troque por `setCACert()` com o certificado raiz (há um comentário no código explicando como).
 
 ### Correção manual da contagem
 
@@ -373,7 +383,7 @@ O painel tem o botão **Corrigir contagem**: informe quantos veículos estão no
 - **O ajuste viaja na resposta do sinal de vida.** A API guarda o ajuste como pendente e o devolve na resposta da próxima publicação do ESP32, em até 30 s. O ESP32 aplica, grava na flash, acende o LED certo e confirma no envio seguinte. Assim a placa continua sendo a dona da contagem, sem endpoint nem consulta extra.
 - **O PIN aceita no máximo 5 erros a cada 10 minutos** por endereço.
 
-### API (Vercel)
+### API do painel
 
 | Endereço | Uso |
 |---|---|
@@ -381,7 +391,7 @@ O painel tem o botão **Corrigir contagem**: informe quantos veículos estão no
 | `POST /api/estado` | Publicação do ESP32. Exige `Authorization: Bearer <INGEST_TOKEN>`. Responde `{"ok":true,"novos":2,"ajuste":null}`. |
 | `POST /api/ajuste` | `{"ocupadas": 42, "pin": "..."}`. Corrige a contagem (protegido pelo `ADMIN_PIN`). |
 
-No Redis ficam o estado atual, os últimos 50 movimentos e um contador de entradas e saídas por hora de cada dia (guardado por 8 dias). Os horários seguem o fuso de São Paulo.
+No arquivo `web/.dados/estacionamento.json` (ou no Redis, se publicado na Vercel) ficam o estado atual, os últimos 50 movimentos e as entradas e saídas por hora de cada dia (guardadas por 8 dias). Os horários seguem o fuso de São Paulo.
 
 ---
 
@@ -392,9 +402,10 @@ No Redis ficam o estado atual, os últimos 50 movimentos e um contador de entrad
 | A placa não aparece em nenhuma porta COM | Troque o cabo (alguns só carregam) e instale o driver CP210x. |
 | `estacionamento.local` não resolve | Use `--esp32 IP_DA_PLACA`, com o IP do Monitor Serial. |
 | `visao.py` mostra "ESP32 sem resposta" | Confira se a placa está na mesma rede e ligada. Os movimentos esperam na fila. |
-| Painel: "Aguardando o primeiro sinal do ESP32" | Confira `URL_API` e `INGEST_TOKEN` no `segredos.h` e veja o Monitor Serial. `HTTP 401` = token diferente do da Vercel. |
-| Painel: "sem sinal há X min" | A placa está sem internet ou desligada. O indicador da entrada continua funcionando. |
-| Painel avisa "dados só na memória" | Falta conectar o Upstash ao projeto na Vercel (parte 7, passo 3). |
+| Painel: "Aguardando o primeiro sinal do ESP32" | Confira `URL_API` (IP do notebook) e `INGEST_TOKEN` no `segredos.h` e veja o Monitor Serial. `HTTP 401` = token diferente do `web/.env.local`. |
+| Painel: "sem sinal há X min" | A placa está desligada ou fora da rede. O indicador da entrada continua funcionando. |
+| Celular não abre o painel | Confira se ele está no mesmo Wi-Fi do notebook e libere o Node.js no Firewall do Windows (inclusive em redes públicas). |
+| Painel avisa "sem o banco Upstash" | Só acontece na Vercel (parte 7, passo 3). No notebook os dados ficam em arquivo. |
 | Contagem errada | Use **Corrigir contagem** no painel e revise a calibração (parte 5). |
 | Sentido trocado | Rode o `visao.py` com `--inverter`. |
 | Câmera conta carros que não passaram | Fixe melhor o celular, toque em **Reaprender fundo** e aumente `--ocupacao`. |
@@ -409,6 +420,6 @@ No Redis ficam o estado atual, os últimos 50 movimentos e um contador de entrad
 - **Veículos lado a lado** ocupam as faixas juntos, e a ordem A/B fica ambígua (o evento é descartado).
 - **Mudança de luz**, sombras em movimento e câmera tremendo geram contagens falsas.
 - **A contagem depende da calibração.** Os erros se acumulam com o tempo, então a **correção manual** faz parte da operação (por exemplo, conferir no início do dia).
-- **O notebook precisa ficar ligado** para a câmera contar. Sem ele, o ESP32 mantém o último número e o indicador continua aceso, mas não vê novos movimentos.
-- **Sem internet**, o painel na Vercel fica desatualizado e avisa "sem sinal". O indicador da entrada e a página `http://estacionamento.local/` continuam funcionando na rede local.
-- **Fila do ESP32 em RAM:** se a placa reiniciar sem internet, os movimentos ainda não publicados somem do histórico do painel, mas a contagem fica certa (está na flash).
+- **O notebook precisa ficar ligado** para a câmera contar e para o painel funcionar. Sem ele, o ESP32 mantém o último número e o indicador continua aceso, mas não vê novos movimentos.
+- **Painel só na rede local:** abre apenas em aparelhos conectados ao mesmo Wi-Fi do notebook. Para ver as vagas de fora, seria preciso publicar na internet (parte 7).
+- **Fila do ESP32 em RAM:** se a placa reiniciar sem conseguir falar com o painel, os movimentos ainda não publicados somem do histórico do painel, mas a contagem fica certa (está na flash).

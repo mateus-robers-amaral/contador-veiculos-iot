@@ -12,10 +12,9 @@ Roda a cadeia inteira do projeto sem celular e sem placa:
 
 Uso:
     python testes/demonstracao.py                                    (só a parte local)
-    python testes/demonstracao.py --api http://localhost:3000        (com o painel do "npm run dev")
-    python testes/demonstracao.py --api https://SEU-PROJETO.vercel.app
-    python testes/demonstracao.py --api ... --continuar 4            (depois do vídeo, segue gerando
-                                                                     movimentos a cada 4 s; Ctrl+C para sair)
+    python testes/demonstracao.py --api http://127.0.0.1:3000        (com o painel do "npm run dev")
+    python testes/demonstracao.py --api http://127.0.0.1:3000 --continuar 4
+                                    (depois do vídeo, segue gerando um movimento a cada 4 s; Ctrl+C para sair)
 """
 
 import argparse
@@ -28,6 +27,8 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
 PORTA_ESP = 8081
+BANCOS = {"arquivo": "arquivo no notebook (web/.dados)", "redis": "Upstash Redis",
+          "memoria": "só na memória do servidor (some ao reiniciar)"}
 
 
 def pedir_json(url):
@@ -38,7 +39,7 @@ def pedir_json(url):
 def main():
     parser = argparse.ArgumentParser(description="Demonstração completa do estacionamento por simulação")
     parser.add_argument("--sequencia", default="EEESESEES", help="E = entrada, S = saída (padrão: 6 E e 3 S)")
-    parser.add_argument("--api", default="", help="URL do painel (ex.: http://localhost:3000 ou a da Vercel)")
+    parser.add_argument("--api", default="", help="URL do painel (ex.: http://127.0.0.1:3000)")
     parser.add_argument("--ocupadas", type=int, default=0, help="ocupação inicial do ESP32 simulado")
     parser.add_argument("--continuar", type=float, default=0,
                         help="depois do vídeo, gera um movimento aleatório a cada N segundos")
@@ -92,9 +93,7 @@ def main():
             e = painel.get("estado") or {}
             print(f"   Painel ({args.api}): {e.get('livres')} vagas livres, indicador {e.get('indicador')}, "
                   f"{len(painel.get('movimentos', []))} movimentos no histórico, "
-                  f"banco: {painel.get('armazenamento')}")
-            if painel.get("armazenamento") == "memoria":
-                print("   Aviso: o painel está sem o Upstash Redis; os dados ficam só na memória do servidor.")
+                  f"dados em: {BANCOS.get(painel.get('armazenamento'), painel.get('armazenamento'))}")
             ok = ok and e.get("livres") == placa["livres"]
 
         if args.continuar > 0:
