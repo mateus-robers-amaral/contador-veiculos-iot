@@ -58,7 +58,8 @@ contador-veiculos-iot/
 │   └── esp32_simulado.py         imita o ESP32 (parte local e publicação no painel)
 ├── teste_esp32/                  teste rápido de uma placa nova (LED + busca de redes)
 ├── docs/                         capturas do painel, relatórios das versões anteriores e o prompt usado
-└── relatorio_estacionamento_iot.docx   relatório final do trabalho
+├── relatorio_estacionamento_iot.pdf    relatório final do trabalho (abre direto no GitHub)
+└── relatorio_estacionamento_iot.docx   o mesmo relatório, editável no Word
 ```
 
 ---
