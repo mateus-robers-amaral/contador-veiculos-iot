@@ -144,6 +144,6 @@ Reescreva o `README.md` para o novo cenário:
    - fazer `git add` e um commit com mensagem descritiva em português;
    - fazer `git push` para `origin main`.
 
-   Lembre que o repositório é **privado** e que o colega João (`jonhvinnykkj`) já foi convidado como colaborador.
+   Lembre que o repositório é **público** (no começo era privado) e que o colega João (`jonhvinnykkj`) é colaborador.
 
    **Não faça o commit nem o push sozinho.** Só me mostre os comandos e espere eu confirmar.
